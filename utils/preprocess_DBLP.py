@@ -109,7 +109,7 @@ class DBLPFourAreaDataset(DGLDataset):
         )
 
     def _filter_nodes_and_edges(self):
-        ## filter author and paper without any relationship
+        # filter author and paper without any relationship
         self.paper_author = self.paper_author[self.paper_author['author_id'].isin(
             self.authors.index)]
         paper_ids = self.paper_author['paper_id'].drop_duplicates()
@@ -185,8 +185,7 @@ class DBLPFourAreaDataset(DGLDataset):
             ('term', 'tp', 'paper'): (pt_t, pt_p)
         })
 
-
-    def split_idx(self,samples, train_size, val_size, random_state=None):
+    def split_idx(self, samples, train_size, val_size, random_state=None):
         """将samples划分为训练集、测试集和验证集，需满足（用浮点数表示）：
 
         * 0 < train_size < 1
@@ -199,11 +198,14 @@ class DBLPFourAreaDataset(DGLDataset):
         :param random_state: int, optional 随机数种子
         :return: (train, val, test) 类型与samples相同
         """
-        train, val = train_test_split(samples, train_size=train_size, random_state=random_state)
+        train, val = train_test_split(
+            samples, train_size=train_size, random_state=random_state)
         if isinstance(val_size, float):
             val_size *= len(samples) / len(val)
-        val, test = train_test_split(val, train_size=val_size, random_state=random_state)
+        val, test = train_test_split(
+            val, train_size=val_size, random_state=random_state)
         return train, val, test
+
     def _add_ndata(self):
         _raw_file2 = os.path.join(self.raw_dir, 'DBLP4057_GAT_with_idx.mat')
         if not os.path.exists(_raw_file2):

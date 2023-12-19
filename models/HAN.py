@@ -42,7 +42,6 @@ class HANLayer(nn.Module):
     def forward(self, subgraphs, h):
         z_m = [gat(s_g, h).flatten(start_dim=1) for gat, s_g in zip(
             self.gats, subgraphs)]  # N * K*d_out for each metapath
-
         z_m = torch.stack(z_m, dim=1)  # N * M * K*d_out (4057,3,128)
         z = self.semantic_attention(z_m)  # N * K*d_iyt (4057, 128)
 
@@ -51,14 +50,23 @@ class HANLayer(nn.Module):
 
 class HAN(nn.Module):
 
-    def __init__(self, num_metapaths, in_dim, hidden_dim, out_dim, num_heads, dropout):
+    def __init__(self, num_metapaths, in_dim, hidden_dim, out_dim, num_heads, num_out_heads, num_layer, dropout):
         super(HAN, self).__init__()
-            self.han_layer = HANLayer(num_metapaths=num_metapaths, in_dim=in_dim, out_dim=hidden_dim,
-                                  num_heads=num_heads, dropout=dropout)
-        self.linear = nn.Linear(
-            in_features=hidden_dim*num_heads, out_features=out_dim)
+        self.han_layers = nn.ModuleList()
+        if (num_layer == 1):
+            self.han_layers.append(HANLayer(num_metapaths=num_metapaths, in_dim=in_dim, out_dim=out_dim,
+                                            num_heads=num_out_heads, dropout=dropout))
+        else:
+            self.han_layers.append(HANLayer(num_metapaths=num_metapaths, in_dim=in_dim, out_dim=hidden_dim,
+                                            num_heads=num_heads, dropout=dropout))
+            for layer in range(1, num_layer-1):
+                self.han_layers.append(HANLayer(num_metapaths=num_metapaths, in_dim=hidden_dim*num_heads, out_dim=hidden_dim,
+                                       num_heads=num_heads, dropout=dropout))
+            self.han_layers.append(HANLayer(num_metapaths=num_metapaths, in_dim=hidden_dim*num_heads, out_dim=out_dim,
+                                            num_heads=num_out_heads, dropout=dropout))
 
     def forward(self, subgraphs, h):
-        z = self.han_layer(subgraphs, h)
-        z = self.linear(z)
+        z = h.clone()
+        for han_layer in self.han_layers:
+            z = han_layer(subgraphs, z)
         return z
