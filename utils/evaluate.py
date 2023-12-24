@@ -3,7 +3,7 @@ import torch.nn.functional as F
 from sklearn.metrics import f1_score
 
 
-def f1_score(logits, labels):
+def score(logits, labels):
     """
     Compute macro,micro f1 score
     """

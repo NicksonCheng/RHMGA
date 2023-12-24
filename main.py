@@ -4,12 +4,17 @@ import torch
 import torch.optim as optim
 import torch.nn.functional as F
 from utils.preprocess_DBLP import DBLP4057Dataset, DBLPFourAreaDataset
+from utils.preprocess_ACM import ACMDataset
 from utils.preprocess_HeCo import DBLPHeCoDataset
-from models.HGAE import HGAE
+from utils.evaluate import score
+from models.HGAE import HGAE, LogisticRegression
 from models.HAN import HAN
 from tqdm import tqdm
+
+import numpy as np
 heterogeneous_dataset = {
     'dblp': DBLPFourAreaDataset,
+    'acm': ACMDataset,
     'heco_dblp': DBLPHeCoDataset
 }
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -34,25 +39,55 @@ def train(args):
                  in_dim=ntype_features.shape[1], args=args)
     optimizer = optim.Adam(model.parameters(), lr=args.lr,
                            weight_decay=args.weight_decay)
-    scheduler = torch.optim.lr_scheduler.ExponentialLR(
-        optimizer, gamma=0.99)
+    if (args.scheduler):
+        scheduler = torch.optim.lr_scheduler.ExponentialLR(
+            optimizer, gamma=0.99)
+        # def scheduler(epoch): return (
+        #     1 + np.cos((epoch) * np.pi / args.epoches)) * 0.5
+        # # scheduler = lambda epoch: epoch / warmup_steps if epoch < warmup_steps \
+        # # else ( 1 + np.cos((epoch - warmup_steps) * np.pi / (max_epoch - warmup_steps))) * 0.5
+        # scheduler = torch.optim.lr_scheduler.LambdaLR(
+        #     optimizer, lr_lambda=scheduler)
     model = model.to(device)
 
-    for epoch in tqdm(range(args.epoches)):
+    for epoch in range(args.epoches):
         model.train()
         ntype_features = ntype_features.to(device)
         optimizer.zero_grad()
         loss = model(hgs, ntype_features)
+
         # output = model(hgs, ntype_features)
         # output = output.cpu()
         # loss = F.cross_entropy(output[train_mask], ntype_labels[train_mask])
         loss.backward()
         optimizer.step()
         scheduler.step()
-        print(f"Epoch: {epoch} Training Loss:{loss.item()}")
+
+        print(
+            f"Epoch: {epoch} Training Loss:{loss.item()} learning_rate={scheduler.get_last_lr()} ")
 
         with torch.no_grad():
             model.eval()
+
+    encoded_feature = model.encoder(hgs, ntype_features)
+    classifier = LogisticRegression(
+        num_dim=args.num_hidden, num_classes=num_classes)
+    classifier = classifier.to(device)
+    optimizer = optim.Adam(classifier.parameters(), lr=args.lr,
+                           weight_decay=args.weight_decay)
+    print("---------Evaluation in Classification---------")
+    for epoch in range(args.epoches):
+        classifier.train()
+        output = classifier(encoded_feature).cpu()
+        eva_loss = F.cross_entropy(
+            output[train_mask], ntype_labels[train_mask])
+        optimizer.zero_grad()
+        eva_loss.backward(retain_graph=True)
+        optimizer.step()
+        micro, macro = score(output[val_mask], ntype_labels[val_mask])
+
+        print(
+            f"Epoch: {epoch} micro_f1:{micro} macro_f1:{macro} learning_rate={scheduler.get_last_lr()} ")
 
 
 if __name__ == "__main__":
@@ -84,6 +119,8 @@ if __name__ == "__main__":
                         default=2e-4, help='weight decay')
     parser.add_argument('--gamma', type=int,
                         default=3, help='gamma for cosine similarity')
+    parser.add_argument('--scheduler', default=True,
+                        help='scheduler for optimizer')
     args = parser.parse_args()
 
     train(args=args)

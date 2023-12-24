@@ -18,6 +18,16 @@ def module_selection(num_m, in_dim, hidden_dim, out_dim, num_heads, num_out_head
                    dropout=dropout)
 
 
+class LogisticRegression(nn.Module):
+    def __init__(self, num_dim, num_classes):
+        super().__init__()
+        self.linear = nn.Linear(num_dim, num_classes)
+
+    def forward(self,  x):
+        logits = self.linear(x)
+        return logits
+
+
 class HGAE(nn.Module):
     def __init__(self,
                  num_metapath,
@@ -74,7 +84,9 @@ class HGAE(nn.Module):
         self.criterion = partial(cosine_similarity, gamma=args.gamma)
 
     def forward(self, hgs, x):
-        loss = self.mask_attribute_prediction(hgs, x)
+        predicted_x, mask_nodes = self.mask_attribute_prediction(
+            hgs, x)
+        loss = self.criterion(x[mask_nodes], predicted_x[mask_nodes])
         return loss
 
     def mask_attribute_prediction(self, hgs, x):
@@ -88,8 +100,8 @@ class HGAE(nn.Module):
 
         # print(x[mask_nodes])
         # print(dec_rep[mask_nodes])
-        loss = self.criterion(x[mask_nodes], dec_rep[mask_nodes])
-        return loss
+
+        return dec_rep, mask_nodes
 
     def encode_mask_noise(self, hgs, x):
         num_nodes = hgs[0].num_nodes()
