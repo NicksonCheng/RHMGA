@@ -2,7 +2,7 @@ import torch
 import torch_geometric
 import torch.nn as nn
 from models.HAN import HAN
-from utils.evaluate import cosine_similarity
+from utils.evaluate import cosine_similarity, mse
 from functools import partial
 
 
@@ -16,16 +16,6 @@ def module_selection(num_m, in_dim, hidden_dim, out_dim, num_heads, num_out_head
                    num_heads=num_heads,
                    num_out_heads=num_out_heads,
                    dropout=dropout)
-
-
-class LogisticRegression(nn.Module):
-    def __init__(self, num_dim, num_classes):
-        super().__init__()
-        self.linear = nn.Linear(num_dim, num_classes)
-
-    def forward(self,  x):
-        logits = self.linear(x)
-        return logits
 
 
 class HGAE(nn.Module):
