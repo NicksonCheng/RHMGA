@@ -2,11 +2,13 @@ import torch
 import torch_geometric
 import torch.nn as nn
 from models.HAN import HAN
+from models.SRN import Schema_Relation_Network
 from utils.evaluate import cosine_similarity, mse
 from functools import partial
 
 
-def module_selection(num_m, in_dim, hidden_dim, out_dim, num_heads, num_out_heads, num_layer, dropout, module_type):
+def module_selection(num_m, num_relations, in_dim, hidden_dim, out_dim,
+                     num_heads, num_out_heads, num_layer, dropout, module_type, weight_T):
     if (module_type == "HAN"):
         return HAN(num_metapaths=num_m,
                    in_dim=in_dim,
@@ -16,17 +18,29 @@ def module_selection(num_m, in_dim, hidden_dim, out_dim, num_heads, num_out_head
                    num_heads=num_heads,
                    num_out_heads=num_out_heads,
                    dropout=dropout)
+    if (module_type == "SRN"):
+        return Schema_Relation_Network(num_relations=num_relations,
+                                       hidden_dim=hidden_dim,
+                                       out_dim=out_dim,
+                                       num_layer=num_layer,
+                                       num_heads=num_heads,
+                                       num_out_heads=num_out_heads,
+                                       dropout=dropout,
+                                       weight_T=weight_T)
 
 
 class HGAE(nn.Module):
     def __init__(self,
                  num_metapath,
-                 in_dim,
+                 num_relations,
+                 target_in_dim,
+                 all_in_dim,
                  args
                  ):
         super(HGAE, self).__init__()
         self.mask_rate = args.mask_rate
-        self.in_dim = in_dim
+        self.target_in_dim = target_in_dim
+        self.all_in_dim = all_in_dim
         self.hidden_dim = args.num_hidden
         self.num_layer = args.num_layer
         self.num_heads = args.num_heads
@@ -37,16 +51,25 @@ class HGAE(nn.Module):
         self.gamma = args.gamma
 
         # encoder/decoder hidden dimension
-        self.enc_dim = self.hidden_dim//self.num_heads
+        if (self.encoder_type == "HAN"):
+            self.enc_dim = self.hidden_dim//self.num_heads
+        else:
+            self.enc_dim = self.hidden_dim
         self.enc_heads = self.num_heads
 
         self.dec_in_dim = self.hidden_dim  # enc_dim * enc_heads
         self.dec_hidden_dim = self.hidden_dim//self.num_heads
         self.dec_heads = self.num_out_heads
 
+        self.weight_T = nn.ModuleList([
+            nn.Linear(dim, self.hidden_dim)
+            for dim in self.all_in_dim
+        ])
+
         self.encoder = module_selection(
             num_m=num_metapath,
-            in_dim=in_dim,
+            num_relations=num_relations,
+            in_dim=self.target_in_dim,
             hidden_dim=self.enc_dim,
             out_dim=self.enc_dim,
             num_heads=self.enc_heads,
@@ -54,6 +77,7 @@ class HGAE(nn.Module):
             num_layer=self.num_layer,
             dropout=self.dropout,
             module_type=self.encoder_type,
+            weight_T=self.weight_T
         )
         # linear transformation from encoder to decoder
         self.encoder_to_decoder = nn.Linear(
@@ -61,45 +85,60 @@ class HGAE(nn.Module):
 
         self.decoder = module_selection(
             num_m=num_metapath,
+            num_relations=num_relations,
             in_dim=self.dec_in_dim,
             hidden_dim=self.dec_hidden_dim,
-            out_dim=self.in_dim,
+            out_dim=self.target_in_dim,
             num_heads=self.enc_heads,
             num_out_heads=self.dec_heads,
             num_layer=1,
             dropout=self.dropout,
             module_type=self.decoder_type,
+            weight_T=self.weight_T
         )
-
         self.criterion = partial(cosine_similarity, gamma=args.gamma)
 
-    def forward(self, hgs, x):
+    def forward(self, mp_subgraphs, sc_subgraphs, x, ntype):
+
         predicted_x, mask_nodes = self.mask_attribute_prediction(
-            hgs, x)
-        loss = self.criterion(x[mask_nodes], predicted_x[mask_nodes])
+            mp_subgraphs, sc_subgraphs, x, ntype)
+        loss = self.criterion(x[ntype][mask_nodes], predicted_x[mask_nodes])
         return loss
 
-    def mask_attribute_prediction(self, hgs, x):
-        use_x, (mask_nodes, keep_nodes) = self.encode_mask_noise(hgs, x)
-        enc_rep = self.encoder(hgs, use_x)
-        rep = self.encoder_to_decoder(enc_rep)
-        # remask
-        rep[mask_nodes] = 0.0
+    def mask_edge_prediction(self, mp_subgraphs, x):
+        pass
 
-        dec_rep = self.decoder(hgs, rep)
+    def mask_attribute_prediction(self, mp_subgraphs, sc_subgraphs, x, ntype):
+        # x represent all node features
+        # use_x represent target predicted node's features
+        use_x, (mask_nodes, keep_nodes) = self.encode_mask_noise(
+            mp_subgraphs, x[ntype])
+        if (self.encoder_type == "HAN"):
+            enc_rep = self.encoder(mp_subgraphs, use_x)
+        else:
+            enc_rep = self.encoder(sc_subgraphs, use_x, x, ntype)
+
+        hidden_rep = self.encoder_to_decoder(enc_rep)
+        # remask
+        hidden_rep[mask_nodes] = 0.0
+
+        if (self.decoder_type == "HAN"):
+            dec_rep = self.decoder(mp_subgraphs, hidden_rep)
+        else:
+            dec_rep = self.decoder(sc_subgraphs, hidden_rep, x, ntype)
 
         # print(x[mask_nodes])
         # print(dec_rep[mask_nodes])
 
         return dec_rep, mask_nodes
 
-    def encode_mask_noise(self, hgs, x):
-        num_nodes = hgs[0].num_nodes()
-        permutation = torch.randperm(num_nodes, device=x.device)
+    def encode_mask_noise(self, mp_subgraphs, ntype_x):
+        num_nodes = mp_subgraphs[0].num_nodes()
+        permutation = torch.randperm(num_nodes, device=ntype_x.device)
         num_mask_nodes = int(self.mask_rate*num_nodes)
         mask_nodes = permutation[:num_mask_nodes]
         keep_nodes = permutation[num_mask_nodes:]
 
-        mask_x = x.clone()
+        mask_x = ntype_x.clone()
         mask_x[mask_nodes] = 0.0
         return mask_x, (mask_nodes, keep_nodes)

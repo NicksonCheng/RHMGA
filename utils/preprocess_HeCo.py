@@ -88,7 +88,6 @@ class HeCoDataset(DGLDataset):
                     self.raw_path, f'{split}_{rate}.npy'))
                 mask = generate_mask_tensor(idx2mask(idx, n))
                 self.g.nodes[self.predict_ntype].data[f'{split}_mask_{rate}'] = mask
-
         pos_i, pos_j = sp.load_npz(os.path.join(
             self.raw_path, 'pos.npz')).nonzero()
         self.pos_i, self.pos_j = torch.from_numpy(
@@ -98,6 +97,7 @@ class HeCoDataset(DGLDataset):
         edges = {}
         for file in os.listdir(self.raw_path):
             name, ext = os.path.splitext(file)
+
             if ext == '.txt':
                 u, v = name
                 e = pd.read_csv(os.path.join(
