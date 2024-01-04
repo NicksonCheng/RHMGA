@@ -116,7 +116,7 @@ class HGAE(nn.Module):
         if (self.encoder_type == "HAN"):
             enc_rep = self.encoder(mp_subgraphs, use_x)
         else:
-            enc_rep = self.encoder(sc_subgraphs, use_x, x, ntype)
+            enc_rep = self.encoder(sc_subgraphs, use_x, x)
 
         hidden_rep = self.encoder_to_decoder(enc_rep)
         # remask
@@ -125,7 +125,7 @@ class HGAE(nn.Module):
         if (self.decoder_type == "HAN"):
             dec_rep = self.decoder(mp_subgraphs, hidden_rep)
         else:
-            dec_rep = self.decoder(sc_subgraphs, hidden_rep, x, ntype)
+            dec_rep = self.decoder(sc_subgraphs, hidden_rep, x)
 
         # print(x[mask_nodes])
         # print(dec_rep[mask_nodes])

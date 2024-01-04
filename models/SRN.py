@@ -79,19 +79,20 @@ class Schema_Relation_Network(nn.Module):
                         attn_drop=0.3, activation=F.elu)
             for _ in range(num_relations)
         ])
+        self.semantic_attention = SemanticAttention(in_dim=out_dim)
 
-    def forward(self, sc_subgraphs, dst_feat, feats, ntype):
+    def forward(self, sc_subgraphs, dst_feat, feats):
         # Linear Transformation to same dimension
         dst_feat = self.weight_T[0](dst_feat)
-        h = []
+        z_r = []
         neighbors_feats = list(feats.values())
         neighbors_feats = [self.weight_T[idx](feat)
                            for idx, feat in enumerate(neighbors_feats)]
-        print(feats.keys())
+        # print(feats.keys())
         for i in range(len(sc_subgraphs)):
-            h.append(self.gats[i](sc_subgraphs[i],
-                     neighbors_feats[i+1], dst_feat))
-        print(h)
-        exit()
+            z_r.append(self.gats[i](sc_subgraphs[i],
+                                    neighbors_feats[i+1], dst_feat))
+        z_r = torch.stack(z_r, dim=1)
+        z = self.semantic_attention(z_r)
 
-        return
+        return z

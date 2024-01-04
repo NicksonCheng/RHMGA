@@ -131,7 +131,11 @@ def train(args):
             result_macro = []
             for ratio in label_ratio:
                 features[ntype] = features[ntype].to(device_0)
-                enc_feat = model.encoder(mp_subgraphs, features[ntype])
+                if (args.encoder == "HAN"):
+                    enc_feat = model.encoder(mp_subgraphs, features[ntype])
+                else:
+                    enc_feat = model.encoder(
+                        sc_subgraphs, features[ntype], features)
 
                 max_micro, max_macro = node_classification_evaluate(
                     enc_feat, args, num_classes, ntype_labels, train_mask, val_mask, test_mask, ratio)
