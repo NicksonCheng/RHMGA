@@ -32,7 +32,6 @@ device_1 = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 
 
 def node_classification_evaluate(enc_feat, args, num_classes, labels, train_mask, val_mask, test_mask, ratio):
-    print("---------Evaluation in Classification---------")
 
     classifier = MLP(
         num_dim=args.num_hidden, num_classes=num_classes)
@@ -49,8 +48,9 @@ def node_classification_evaluate(enc_feat, args, num_classes, labels, train_mask
 
     val_macro = []
     val_micro = []
-    test_macro = []
-    test_micro = []
+    val_accuracy = []
+    best_val_acc = 0.0
+    best_model_state_dict = classifier.state_dict()
     for epoch in tqdm(range(args.eva_epoches), position=0):
         classifier.train()
         train_output = classifier(emb["train"]).cpu()
@@ -61,11 +61,21 @@ def node_classification_evaluate(enc_feat, args, num_classes, labels, train_mask
         optimizer.step()
 
         val_output = classifier(emb["val"]).cpu()
-        val_micro_f1, val_macro_f1 = score(val_output, labels["val"])
+        val_acc, val_micro_f1, val_macro_f1 = score(val_output, labels["val"])
+
+        if (val_acc > best_val_acc):
+            best_val_acc = val_acc
+            best_model_state_dict = classifier.state_dict()
+
+        val_accuracy.append(val_acc)
         val_micro.append(val_micro_f1)
         val_macro.append(val_macro_f1)
 
-    return max(val_micro), max(val_macro)
+    test_output = classifier(emb["test"]).cpu()
+    test_acc, test_micro_f1, test_macro_f1 = score(test_output, labels["test"])
+
+    return test_acc, test_micro_f1, test_macro_f1
+    # return max(val_accuracy), max(val_micro), max(val_macro)
 
 
 def train(args):
@@ -124,9 +134,10 @@ def train(args):
         scheduler.step()
 
         print(
-            f"Epoch: {epoch} Training Loss:{loss.item()} learning_rate={scheduler.get_last_lr()} ")
+            f"Epoch:{epoch} Training Loss:{loss.item()} learning_rate={scheduler.get_last_lr()}")
 
         if (epoch > 0 and epoch % 20 == 0):
+            result_acc = []
             result_micro = []
             result_macro = []
             for ratio in label_ratio:
@@ -137,13 +148,14 @@ def train(args):
                     enc_feat = model.encoder(
                         sc_subgraphs, features[ntype], features)
 
-                max_micro, max_macro = node_classification_evaluate(
+                max_acc, max_micro, max_macro = node_classification_evaluate(
                     enc_feat, args, num_classes, ntype_labels, train_mask, val_mask, test_mask, ratio)
+                result_acc.append(max_acc)
                 result_micro.append(max_micro)
                 result_macro.append(max_macro)
             for idx, ratio in enumerate(label_ratio):
-                print("\t Label Rate:{}% [ Macro-F1:{:4f} Micro-F1:{:4f} ]".format(
-                    ratio, result_macro[idx], result_micro[idx]))
+                print("\t Label Rate:{}% [Accuracy:{:4f} Macro-F1:{:4f} Micro-F1:{:4f} ]".format(
+                    ratio, result_acc[idx], result_macro[idx], result_micro[idx]))
         # with torch.no_grad():
         #     model.eval()
 

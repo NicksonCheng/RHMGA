@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from sklearn.metrics import f1_score, mean_squared_error
+from sklearn.metrics import f1_score, mean_squared_error, roc_auc_score
 
 
 class LogisticRegression(nn.Module):
@@ -34,7 +34,11 @@ def score(logits, labels):
     Compute macro,micro f1 score
     """
     _, indices = torch.max(logits, dim=1)
-    return f1_score(labels, indices, average='micro'), f1_score(labels, indices, average='macro')
+    total = float(indices.size()[0])
+    # acc = torch.eq(indices, labels).sum().item() / total
+    acc = roc_auc_score(y_true=labels.detach().numpy(),
+                        y_score=logits.detach().numpy(), multi_class='ovr')
+    return acc, f1_score(labels, indices, average='micro'), f1_score(labels, indices, average='macro')
 
 
 def mse(x, y):
