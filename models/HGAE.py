@@ -3,14 +3,28 @@ import torch_geometric
 import torch.nn as nn
 from models.HAN import HAN
 from models.SRN import Schema_Relation_Network
+from models.HAN_SRN import Metapath_Relation_Network
 from utils.evaluate import cosine_similarity, mse
 from functools import partial
 
+class MultiLayerPerception(nn.Module):
+    def __init__(self, input_dim, output_dim):
+        super(MultiLayerPerception, self).__init__()
+        self.hidden = input_dim*2
+        self.fc1 = nn.Linear(input_dim, self.hidden)
+        self.relu = nn.ReLU()
+        self.fc2 = nn.Linear(self.hidden, output_dim)
+
+    def forward(self, x):
+        x = self.fc1(x)
+        x = self.relu(x)
+        x = self.fc2(x)
+        return x
 
 def module_selection(num_m, num_relations, in_dim, hidden_dim, out_dim,
                      num_heads, num_out_heads, num_layer, dropout, module_type, weight_T):
     if (module_type == "HAN"):
-        return HAN(num_metapaths=num_m,
+            return HAN(num_metapaths=num_m,
                    in_dim=in_dim,
                    hidden_dim=hidden_dim,
                    out_dim=out_dim,
@@ -18,7 +32,7 @@ def module_selection(num_m, num_relations, in_dim, hidden_dim, out_dim,
                    num_heads=num_heads,
                    num_out_heads=num_out_heads,
                    dropout=dropout)
-    if (module_type == "SRN"):
+    elif (module_type == "SRN"):
         return Schema_Relation_Network(num_relations=num_relations,
                                        hidden_dim=hidden_dim,
                                        out_dim=out_dim,
@@ -27,6 +41,22 @@ def module_selection(num_m, num_relations, in_dim, hidden_dim, out_dim,
                                        num_out_heads=num_out_heads,
                                        dropout=dropout,
                                        weight_T=weight_T)
+    elif(module_type=="HAN_SRN"):
+        return Metapath_Relation_Network(num_metapaths=num_m,
+                                         num_relations=num_relations,
+                                         hidden_dim=hidden_dim,
+                                         out_dim=out_dim,
+                                         num_han_layer=num_layer,
+                                         num_srn_layer=num_layer,
+                                         num_heads=num_heads,
+                                         num_out_heads=num_out_heads,
+                                         dropout=dropout,
+                                         weight_T=weight_T)
+
+    elif(module_type=="MLP"):
+        return MultiLayerPerception(input_dim=hidden_dim,
+                                     output_dim=out_dim)
+
 
 
 class HGAE(nn.Module):
@@ -61,6 +91,7 @@ class HGAE(nn.Module):
         self.dec_hidden_dim = self.hidden_dim//self.num_heads
         self.dec_heads = self.num_out_heads
 
+        ## project all type of node into same dimension
         self.weight_T = nn.ModuleList([
             nn.Linear(dim, self.hidden_dim)
             for dim in self.all_in_dim
@@ -126,7 +157,8 @@ class HGAE(nn.Module):
             dec_rep = self.decoder(mp_subgraphs, hidden_rep)
         else:
             dec_rep = self.decoder(sc_subgraphs, hidden_rep, x)
-
+        print(dec_rep.shape)
+        exit()
         # print(x[mask_nodes])
         # print(dec_rep[mask_nodes])
 

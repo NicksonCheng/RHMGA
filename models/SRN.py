@@ -25,7 +25,7 @@ class HeCoGATConv(nn.Module):
 
     def forward(self, g, feat_src, feat_dst):
         with g.local_scope():
-            # HeCo作者代码中使用attn_drop的方式与原始GAT不同，这样是不对的，却能顶点聚类提升性能……
+        
             attn_l = self.attn_drop(self.attn_l)
             attn_r = self.attn_drop(self.attn_r)
             el = (feat_src * attn_l).sum(dim=-
