@@ -8,8 +8,7 @@ import pandas as pd
 import scipy.sparse as sp
 import torch
 from dgl.data import DGLDataset
-from dgl.data.utils import download, save_graphs, save_info, load_graphs, load_info, \
-    generate_mask_tensor, idx2mask
+from dgl.data.utils import download, save_graphs, save_info, load_graphs, load_info, generate_mask_tensor, idx2mask
 
 
 class HeCoDataset(DGLDataset):
@@ -33,23 +32,19 @@ class HeCoDataset(DGLDataset):
     """
 
     def __init__(self, name, ntypes):
-        url = 'https://api.github.com/repos/liun-online/HeCo/zipball/main'
+        url = "https://api.github.com/repos/liun-online/HeCo/zipball/main"
         self._ntypes = {ntype[0]: ntype for ntype in ntypes}
-        super().__init__(name + '-heco', url)
+        super().__init__(name + "-heco", url)
 
     def download(self):
-        file_path = os.path.join(self.raw_dir, 'HeCo-main.zip')
+        file_path = os.path.join(self.raw_dir, "HeCo-main.zip")
         if not os.path.exists(file_path):
             download(self.url, path=file_path)
-        with zipfile.ZipFile(file_path, 'r') as f:
+        with zipfile.ZipFile(file_path, "r") as f:
             f.extractall(self.raw_dir)
         print(self.raw_dir)
         print(self.raw_path)
-        shutil.copytree(
-            os.path.join(self.raw_dir, 'HeCo-main',
-                         'data', self.name.split('-')[0]),
-            os.path.join(self.raw_path)
-        )
+        shutil.copytree(os.path.join(self.raw_dir, "HeCo-main", "data", self.name.split("-")[0]), os.path.join(self.raw_path))
 
     def save(self):
         # save_graphs(os.path.join(self.save_path,
@@ -59,72 +54,63 @@ class HeCoDataset(DGLDataset):
         pass
 
     def load(self):
-        graphs, _ = load_graphs(os.path.join(
-            self.save_path, self.name + '_dgl_graph.bin'))
+        graphs, _ = load_graphs(os.path.join(self.save_path, self.name + "_dgl_graph.bin"))
         self.g = graphs[0]
         ntype = self.predict_ntype
-        self._num_classes = self.g.nodes[ntype].data['label'].max().item() + 1
-        for k in ('train_mask', 'val_mask', 'test_mask'):
+        self._num_classes = self.g.nodes[ntype].data["label"].max().item() + 1
+        for k in ("train_mask", "val_mask", "test_mask"):
             self.g.nodes[ntype].data[k] = self.g.nodes[ntype].data[k].bool()
-        info = load_info(os.path.join(self.raw_path, self.name + '_pos.pkl'))
-        self.pos_i, self.pos_j = info['pos_i'], info['pos_j']
+        info = load_info(os.path.join(self.raw_path, self.name + "_pos.pkl"))
+        self.pos_i, self.pos_j = info["pos_i"], info["pos_j"]
 
     def process(self):
         self.g = dgl.heterograph(self._read_edges())
 
         feats = self._read_feats()
         for ntype, feat in feats.items():
-            self.g.nodes[ntype].data['feat'] = feat
+            self.g.nodes[ntype].data["feat"] = feat
 
-        labels = torch.from_numpy(
-            np.load(os.path.join(self.raw_path, 'labels.npy'))).long()
+        labels = torch.from_numpy(np.load(os.path.join(self.raw_path, "labels.npy"))).long()
         self._num_classes = labels.max().item() + 1
-        self.g.nodes[self.predict_ntype].data['label'] = labels
+        self.g.nodes[self.predict_ntype].data["label"] = labels
 
         n = self.g.num_nodes(self.predict_ntype)
-        for split in ('train', 'val', 'test'):
+        for split in ("train", "val", "test"):
             for rate in [20, 40, 60]:
-                idx = np.load(os.path.join(
-                    self.raw_path, f'{split}_{rate}.npy'))
+                idx = np.load(os.path.join(self.raw_path, f"{split}_{rate}.npy"))
                 mask = generate_mask_tensor(idx2mask(idx, n))
-                self.g.nodes[self.predict_ntype].data[f'{split}_mask_{rate}'] = mask
-        pos_i, pos_j = sp.load_npz(os.path.join(
-            self.raw_path, 'pos.npz')).nonzero()
-        self.pos_i, self.pos_j = torch.from_numpy(
-            pos_i).long(), torch.from_numpy(pos_j).long()
+                self.g.nodes[self.predict_ntype].data[f"{split}_mask_{rate}"] = mask
+        pos_i, pos_j = sp.load_npz(os.path.join(self.raw_path, "pos.npz")).nonzero()
+        self.pos_i, self.pos_j = torch.from_numpy(pos_i).long(), torch.from_numpy(pos_j).long()
 
     def _read_edges(self):
         edges = {}
         for file in os.listdir(self.raw_path):
             name, ext = os.path.splitext(file)
 
-            if ext == '.txt':
+            if ext == ".txt":
                 u, v = name
-                e = pd.read_csv(os.path.join(
-                    self.raw_path, f'{u}{v}.txt'), sep='\t', names=[u, v])
+                e = pd.read_csv(os.path.join(self.raw_path, f"{u}{v}.txt"), sep="\t", names=[u, v])
                 src = e[u].to_list()
                 dst = e[v].to_list()
-                edges[(self._ntypes[u], f'{u}{v}',
-                       self._ntypes[v])] = (src, dst)
-                edges[(self._ntypes[v], f'{v}{u}',
-                       self._ntypes[u])] = (dst, src)
+                edges[(self._ntypes[u], f"{u}{v}", self._ntypes[v])] = (src, dst)
+                edges[(self._ntypes[v], f"{v}{u}", self._ntypes[u])] = (dst, src)
         return edges
 
     def _read_feats(self):
         feats = {}
         for u in self._ntypes:
-            file = os.path.join(self.raw_path, f'{u}_feat.npz')
+            file = os.path.join(self.raw_path, f"{u}_feat.npz")
             if os.path.exists(file):
-                feats[self._ntypes[u]] = torch.from_numpy(
-                    sp.load_npz(file).toarray()).float()
+                feats[self._ntypes[u]] = torch.from_numpy(sp.load_npz(file).toarray()).float()
         return feats
 
     def has_cache(self):
-        return os.path.exists(os.path.join(self.save_path, self.name + '_dgl_graph.bin'))
+        return os.path.exists(os.path.join(self.save_path, self.name + "_dgl_graph.bin"))
 
     def __getitem__(self, idx):
         if idx != 0:
-            raise IndexError('This dataset has only one graph')
+            raise IndexError("This dataset has only one graph")
         return self.g
 
     def __len__(self):
@@ -170,15 +156,15 @@ class ACMHeCoDataset(HeCoDataset):
     """
 
     def __init__(self):
-        super().__init__('acm', ['paper', 'author', 'subject'])
+        super().__init__("acm", ["paper", "author", "subject"])
 
     @property
     def metapaths(self):
-        return [['pa', 'ap'], ['ps', 'sp']]
+        return [["pa", "ap"], ["ps", "sp"]]
 
     @property
     def predict_ntype(self):
-        return 'paper'
+        return "paper"
 
 
 class DBLPHeCoDataset(HeCoDataset):
@@ -208,25 +194,23 @@ class DBLPHeCoDataset(HeCoDataset):
     """
 
     def __init__(self):
-        super().__init__('dblp', ['author', 'paper', 'conference', 'term'])
+        super().__init__("dblp", ["author", "paper", "conference", "term"])
 
     def _read_feats(self):
         feats = {}
-        for u in 'ap':
-            file = os.path.join(self.raw_path, f'{u}_feat.npz')
-            feats[self._ntypes[u]] = torch.from_numpy(
-                sp.load_npz(file).toarray()).float()
-        feats['term'] = torch.from_numpy(
-            np.load(os.path.join(self.raw_path, 't_feat.npz'))).float()
+        for u in "ap":
+            file = os.path.join(self.raw_path, f"{u}_feat.npz")
+            feats[self._ntypes[u]] = torch.from_numpy(sp.load_npz(file).toarray()).float()
+        feats["term"] = torch.from_numpy(np.load(os.path.join(self.raw_path, "t_feat.npz"))).float()
         return feats
 
     @property
     def metapaths(self):
-        return [['ap', 'pa'], ['ap', 'pc', 'cp', 'pa'], ['ap', 'pt', 'tp', 'pa']]
+        return [["ap", "pa"], ["ap", "pc", "cp", "pa"], ["ap", "pt", "tp", "pa"]]
 
     @property
     def predict_ntype(self):
-        return 'author'
+        return "author"
 
 
 class FreebaseHeCoDataset(HeCoDataset):
@@ -247,15 +231,15 @@ class FreebaseHeCoDataset(HeCoDataset):
     """
 
     def __init__(self):
-        super().__init__('freebase', ['movie', 'author', 'director', 'writer'])
+        super().__init__("freebase", ["movie", "author", "director", "writer"])
 
     @property
     def metapaths(self):
-        return [['ma', 'am'], ['md', 'dm'], ['mw', 'wm']]
+        return [["ma", "am"], ["md", "dm"], ["mw", "wm"]]
 
     @property
     def predict_ntype(self):
-        return 'movie'
+        return "movie"
 
 
 class AMinerHeCoDataset(HeCoDataset):
@@ -276,12 +260,12 @@ class AMinerHeCoDataset(HeCoDataset):
     """
 
     def __init__(self):
-        super().__init__('aminer', ['paper', 'author', 'reference'])
+        super().__init__("aminer", ["paper", "author", "reference"])
 
     @property
     def metapaths(self):
-        return [['pa', 'ap'], ['pr', 'rp']]
+        return [["pa", "ap"], ["pr", "rp"]]
 
     @property
     def predict_ntype(self):
-        return 'paper'
+        return "paper"
