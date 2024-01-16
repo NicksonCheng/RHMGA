@@ -23,7 +23,7 @@ class MultiLayerPerception(nn.Module):
         return x
 
 
-def module_selection(num_m, num_relations, in_dim, hidden_dim, out_dim, num_heads, num_out_heads, num_layer, dropout, module_type, weight_T,enc_dec):
+def module_selection(num_m, num_relations, in_dim, hidden_dim, out_dim, num_heads, num_out_heads, num_layer, dropout, module_type, weight_T, enc_dec):
     if module_type == "HAN":
         return HAN(
             num_metapaths=num_m,
@@ -45,6 +45,7 @@ def module_selection(num_m, num_relations, in_dim, hidden_dim, out_dim, num_head
             num_out_heads=num_out_heads,
             dropout=dropout,
             weight_T=weight_T,
+            enc_dec=enc_dec,
         )
     elif module_type == "HAN_SRN":
         return Metapath_Relation_Network(
@@ -109,7 +110,7 @@ class HGAE(nn.Module):
             dropout=self.dropout,
             module_type=self.encoder_type,
             weight_T=self.weight_T,
-            enc_dec="encoder"
+            enc_dec="encoder",
         )
         # linear transformation from encoder to decoder
         self.encoder_to_decoder = nn.Linear(self.dec_in_dim, self.dec_in_dim, bias=False)
@@ -126,7 +127,7 @@ class HGAE(nn.Module):
             dropout=self.dropout,
             module_type=self.decoder_type,
             weight_T=self.weight_T,
-            enc_dec="decoder"
+            enc_dec="decoder",
         )
         self.criterion = partial(cosine_similarity, gamma=args.gamma)
 
@@ -145,9 +146,9 @@ class HGAE(nn.Module):
         if self.encoder_type == "HAN":
             enc_rep = self.encoder(mp_subgraphs, use_x)
         elif self.encoder_type == "SRN":
-            enc_rep = self.encoder(sc_subgraphs, use_x, x)
+            enc_rep = self.encoder(sc_subgraphs, use_x, x, "encoder")
         elif self.encoder_type == "HAN_SRN":
-            enc_rep = self.encoder(mp_subgraphs, sc_subgraphs, use_x, x,"encoder")
+            enc_rep = self.encoder(mp_subgraphs, sc_subgraphs, use_x, x, "encoder")
         hidden_rep = self.encoder_to_decoder(enc_rep)
         # remask
         hidden_rep[mask_nodes] = 0.0
@@ -156,10 +157,11 @@ class HGAE(nn.Module):
         if self.decoder_type == "HAN":
             dec_rep = self.decoder(mp_subgraphs, hidden_rep)
         elif self.decoder_type == "SRN":
-            dec_rep = self.decoder(sc_subgraphs, hidden_rep, x)
+            dec_rep = self.decoder(sc_subgraphs, hidden_rep, x, "decoder")
+
         elif self.decoder_type == "HAN_SRN":
-            #print("enter HAN SRN")
-            dec_rep = self.decoder(mp_subgraphs, sc_subgraphs, hidden_rep, x,"decoder")
+            # print("enter HAN SRN")
+            dec_rep = self.decoder(mp_subgraphs, sc_subgraphs, hidden_rep, x, "decoder")
         elif self.decoder_type == "MLP":
             dec_rep = self.decoder(hidden_rep)
         # print(x[mask_nodes])

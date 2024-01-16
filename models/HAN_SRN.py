@@ -81,14 +81,16 @@ class HANLayer(nn.Module):
 
 
 class Metapath_Relation_Network(nn.Module):
-    def __init__(self, num_metapaths, num_relations, hidden_dim, out_dim, num_han_layer, num_srn_layer, num_heads, num_out_heads, dropout, weight_T,enc_dec):
+    def __init__(
+        self, num_metapaths, num_relations, hidden_dim, out_dim, num_han_layer, num_srn_layer, num_heads, num_out_heads, dropout, weight_T, enc_dec
+    ):
         super(Metapath_Relation_Network, self).__init__()
 
         self.weight_T = weight_T
-        if(enc_dec=="encoder"):
+        if enc_dec == "encoder":
             self.han_out_dim = out_dim // num_heads
         else:
-            self.han_out_dim=out_dim
+            self.han_out_dim = out_dim
         self.srns = nn.ModuleList(
             [
                 # torch_geometric GATConv(in_channels=in_dim,out_channels=hidden_dim,heads=num_heads,dropout=dropout)
@@ -117,22 +119,20 @@ class Metapath_Relation_Network(nn.Module):
                 )
             )
 
-    def forward(self, mp_subgraphs, sc_subgraphs, dst_feat, feats,enc_dec="encoder"):
+    def forward(self, mp_subgraphs, sc_subgraphs, dst_feat, feats, enc_dec="encoder"):
         ### SRN Module
         # Linear Transformation to same dimension
-        if(enc_dec=="encoder"):
+        if enc_dec == "encoder":
             dst_feat = self.weight_T[0](dst_feat)
-        
+
         z_r = []
         neighbors_feats = list(feats.values())
-        neighbors_feats = [self.weight_T[idx](feat) for idx, feat in 
-        enumerate(neighbors_feats)]
+        neighbors_feats = [self.weight_T[idx](feat) for idx, feat in enumerate(neighbors_feats)]
         # print(feats.keys())
         for i in range(len(sc_subgraphs)):
             z_r.append(self.srns[i](sc_subgraphs[i], neighbors_feats[i + 1], dst_feat))
 
         z_r = torch.stack(z_r, dim=1)
-
 
         z = self.semantic_attention(z_r)
         ### HAN Module
