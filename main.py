@@ -4,19 +4,25 @@ import yaml
 import dgl
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 import numpy as np
 import matplotlib.pyplot as plt
 from utils.preprocess_DBLP import DBLP4057Dataset, DBLPFourAreaDataset
 from utils.preprocess_ACM import ACMDataset
-from utils.preprocess_HeCo import DBLPHeCoDataset, ACMHeCoDataset, AMinerHeCoDataset, FreebaseHeCoDataset
+from utils.preprocess_HeCo import (
+    DBLPHeCoDataset,
+    ACMHeCoDataset,
+    AMinerHeCoDataset,
+    FreebaseHeCoDataset,
+)
 from utils.evaluate import score, LogisticRegression, MLP
-from models.HGAE import HGAE
+from models.HGARME import HGARME
 from models.HAN import HAN
 from tqdm import tqdm
 
-
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 device_0 = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 device_1 = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 heterogeneous_dataset = {
@@ -30,8 +36,21 @@ heterogeneous_dataset = {
             ("paper", "pa", "author"),
         ],
     },
-    "heco_freebase": {"name": FreebaseHeCoDataset, "relations": [("author", "am", "movie"), ("director", "dm", "movie"), ("writer", "wm", "movie")]},
-    "heco_aminer": {"name": AMinerHeCoDataset, "relations": [("paper", "pa", "author"), ("paper", "pr", "reference")]},
+    "heco_freebase": {
+        "name": FreebaseHeCoDataset,
+        "relations": [
+            ("author", "am", "movie"),
+            ("director", "dm", "movie"),
+            ("writer", "wm", "movie"),
+            ("movie", "ma", "author"),
+            ("movie", "md", "director"),
+            ("movie", "mw", "writer"),
+        ],
+    },
+    "heco_aminer": {
+        "name": AMinerHeCoDataset,
+        "relations": [("paper", "pa", "author"), ("paper", "pr", "reference")],
+    },
 }
 
 
@@ -45,13 +64,23 @@ def load_config(args, path):
     return args
 
 
-def node_classification_evaluate(enc_feat, args, num_classes, labels, train_mask, val_mask, test_mask, ratio):
+def node_classification_evaluate(
+    enc_feat, args, num_classes, labels, train_mask, val_mask, test_mask, ratio
+):
     classifier = MLP(num_dim=args.num_hidden, num_classes=num_classes)
-    classifier = classifier.to(device_1)
+    classifier = classifier.to(device)
     optimizer = optim.Adam(classifier.parameters(), lr=args.eva_lr, weight_decay=args.eva_wd)
-    enc_feat = enc_feat.to(device_1)
-    emb = {"train": enc_feat[train_mask[ratio]], "val": enc_feat[val_mask[ratio]], "test": enc_feat[test_mask[ratio]]}
-    labels = {"train": labels[train_mask[ratio]], "val": labels[val_mask[ratio]], "test": labels[test_mask[ratio]]}
+    enc_feat = enc_feat.to(device)
+    emb = {
+        "train": enc_feat[train_mask[ratio]],
+        "val": enc_feat[val_mask[ratio]],
+        "test": enc_feat[test_mask[ratio]],
+    }
+    labels = {
+        "train": labels[train_mask[ratio]],
+        "val": labels[val_mask[ratio]],
+        "test": labels[test_mask[ratio]],
+    }
 
     val_macro = []
     val_micro = []
@@ -93,25 +122,37 @@ def train(args):
     metapaths = data.metapaths
     relations = heterogeneous_dataset[args.dataset]["relations"]
     graph = data[0]
-    sc_subgraphs = [graph[rel].to(device_0) for rel in relations]
-    mp_subgraphs = [dgl.metapath_reachable_graph(graph, metapath).to(device_0) for metapath in metapaths]  # homogeneous graph divide by metapaths
+    sc_subgraphs = [graph[rels].to(device) for rels in relations]
+    mp_subgraphs = [
+        dgl.metapath_reachable_graph(graph, metapath).to(device) for metapath in metapaths
+    ]  # homogeneous graph divide by metapaths
+    graph = graph.to(device)
     all_types = list(data._ntypes.values())
-    ntype = data.predict_ntype
+    target_type = data.predict_ntype
     num_classes = data.num_classes
-    features = {t: graph.nodes[t].data["feat"].to(device_0) for t in all_types if "feat" in graph.nodes[t].data}
-    ntype_labels = graph.nodes[ntype].data["label"]
+    features = {
+        t: graph.nodes[t].data["feat"].to(device)
+        for t in all_types
+        if "feat" in graph.nodes[t].data
+    }
+    target_type_labels = graph.nodes[target_type].data["label"]
     label_ratio = ["20", "40", "60"]
-    train_mask = {ratio: graph.nodes[ntype].data[f"train_mask_{ratio}"] for ratio in label_ratio}
-    val_mask = {ratio: graph.nodes[ntype].data[f"val_mask_{ratio}"] for ratio in label_ratio}
-    test_mask = {ratio: graph.nodes[ntype].data[f"test_mask_{ratio}"] for ratio in label_ratio}
+    train_mask = {
+        ratio: graph.nodes[target_type].data[f"train_mask_{ratio}"] for ratio in label_ratio
+    }
+    val_mask = {ratio: graph.nodes[target_type].data[f"val_mask_{ratio}"] for ratio in label_ratio}
+    test_mask = {
+        ratio: graph.nodes[target_type].data[f"test_mask_{ratio}"] for ratio in label_ratio
+    }
 
-    # model = HAN(num_metapaths=len(metapaths), in_dim=features[ntype].shape[1], hidden_dim=args.num_hidden, out_dim=num_classes,
+    # model = HAN(num_metapaths=len(metapaths), in_dim=features[target_type].shape[1], hidden_dim=args.num_hidden, out_dim=num_classes,
     #            num_heads=args.num_heads, dropout=args.dropout)
-    model = HGAE(
+    model = HGARME(
         num_metapath=len(metapaths),
         num_relations=len(relations),
-        target_in_dim=features[ntype].shape[1],
-        all_in_dim=[feat.shape[1] for feat in features.values()],
+        all_types=all_types,
+        target_in_dim=features[target_type].shape[1],
+        all_in_dim={ntype: feat.shape[1] for ntype, feat in features.items()},
         args=args,
     )
     optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
@@ -126,7 +167,10 @@ def train(args):
         # scheduler = lambda epoch: epoch / warmup_steps if epoch < warmup_steps \
         # else ( 1 + np.cos((epoch - warmup_steps) * np.pi / (max_epoch - warmup_steps))) * 0.5
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=scheduler)
-    model = model.to(device_0)
+
+    if torch.cuda.is_available() and torch.cuda.device_count() > 1:
+        model = nn.DataParallel(model)
+    model = model.to(device)
     performance = {
         "20": {"Acc": [], "Macro-F1": [], "Micro-F1": []},
         "40": {"Acc": [], "Macro-F1": [], "Micro-F1": []},
@@ -135,36 +179,47 @@ def train(args):
     log_times = datetime.now().strftime("[%Y-%m-%d_%H:%M:%S]")
     for epoch in range(args.epoches):
         model.train()
-        features[ntype] = features[ntype].to(device_0)
 
-        loss = model(mp_subgraphs, sc_subgraphs, features, ntype)
+        loss = model(graph, relations, mp_subgraphs, features)
 
         optimizer.zero_grad()
-        # output = model(mp_subgraphs, features[ntype])
+        # output = model(mp_subgraphs, features[target_type])
         # output = output.cpu()
-        # loss = F.cross_entropy(output[train_mask], ntype_labels[train_mask])
+        # loss = F.cross_entropy(output[train_mask], target_type_labels[train_mask])
         loss.backward()
         optimizer.step()
         scheduler.step()
 
         print(f"Epoch:{epoch} Training Loss:{loss.item()} learning_rate={scheduler.get_last_lr()}")
         if epoch > 0 and (epoch + 1) % 20 == 0:
-            with open(f"./log/{args.encoder}+{args.decoder}_{args.dataset}_{log_times}.txt", "a") as log_file:
+            with open(
+                f"./log/{args.encoder}+{args.decoder}_{args.dataset}_{log_times}.txt",
+                "a",
+            ) as log_file:
                 result_acc = []
                 result_micro = []
                 result_macro = []
                 log_file.write(f"Epoches:{epoch}-----------------------------------\n")
                 for ratio in label_ratio:
-                    features[ntype] = features[ntype].to(device_0)
+                    features[target_type] = features[target_type].to(device)
                     if args.encoder == "HAN":
-                        enc_feat = model.encoder(mp_subgraphs, features[ntype])
+                        enc_feat = model.encoder(mp_subgraphs, features[target_type])
                     elif args.encoder == "SRN":
-                        enc_feat = model.encoder(sc_subgraphs, features[ntype], features)
+                        enc_feat = model.encoder(sc_subgraphs, features[target_type], features)
                     elif args.encoder == "HAN_SRN":
-                        enc_feat = model.encoder(mp_subgraphs, sc_subgraphs, features[ntype], features)
+                        enc_feat = model.encoder(
+                            mp_subgraphs, sc_subgraphs, features[target_type], features
+                        )
 
                     max_acc, max_micro, max_macro = node_classification_evaluate(
-                        enc_feat, args, num_classes, ntype_labels, train_mask, val_mask, test_mask, ratio
+                        enc_feat,
+                        args,
+                        num_classes,
+                        target_type_labels,
+                        train_mask,
+                        val_mask,
+                        test_mask,
+                        ratio,
                     )
                     performance[ratio]["Acc"].append(max_acc)
                     performance[ratio]["Macro-F1"].append(max_macro)
@@ -172,8 +227,15 @@ def train(args):
                     result_acc.append(max_acc)
                     result_micro.append(max_micro)
                     result_macro.append(max_macro)
-                    log_file.write("\t Label Rate:{}% [Accuracy:{:4f} Macro-F1:{:4f} Micro-F1:{:4f} ]\n".format(ratio, max_acc, max_macro, max_micro))
+                    log_file.write(
+                        "\t Label Rate:{}% [Accuracy:{:4f} Macro-F1:{:4f} Micro-F1:{:4f} ]\n".format(
+                            ratio, max_acc, max_macro, max_micro
+                        )
+                    )
 
+    ####
+    ## plot the performance
+    ####
     fig, axs = plt.subplots(1, len(label_ratio), figsize=(15, 5))
     x_range = list(range(0, args.epoches + 1, 20))[1:]
     for i, ratio in enumerate(label_ratio):
@@ -195,7 +257,9 @@ if __name__ == "__main__":
     parser.add_argument("--eva_epoches", type=int, default=50)
     parser.add_argument("--num_layer", type=int, default=3, help="number of model layer")
     parser.add_argument("--num_heads", type=int, default=8, help="number of attention heads")
-    parser.add_argument("--num_out_heads", type=int, default=1, help="number of attention output heads")
+    parser.add_argument(
+        "--num_out_heads", type=int, default=1, help="number of attention output heads"
+    )
     parser.add_argument("--num_hidden", type=int, default=256, help="number of hidden units")
     parser.add_argument("--dropout", type=float, default=0.4, help="dropout probability")
     parser.add_argument("--lr", type=float, default=0.001, help="learning rate")

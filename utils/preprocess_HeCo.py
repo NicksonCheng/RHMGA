@@ -8,7 +8,15 @@ import pandas as pd
 import scipy.sparse as sp
 import torch
 from dgl.data import DGLDataset
-from dgl.data.utils import download, save_graphs, save_info, load_graphs, load_info, generate_mask_tensor, idx2mask
+from dgl.data.utils import (
+    download,
+    save_graphs,
+    save_info,
+    load_graphs,
+    load_info,
+    generate_mask_tensor,
+    idx2mask,
+)
 
 
 class HeCoDataset(DGLDataset):
@@ -37,14 +45,18 @@ class HeCoDataset(DGLDataset):
         super().__init__(name + "-heco", url)
 
     def download(self):
-        file_path = os.path.join(self.raw_dir, "HeCo-main.zip")
-        if not os.path.exists(file_path):
-            download(self.url, path=file_path)
-        with zipfile.ZipFile(file_path, "r") as f:
-            f.extractall(self.raw_dir)
-        print(self.raw_dir)
-        print(self.raw_path)
-        shutil.copytree(os.path.join(self.raw_dir, "HeCo-main", "data", self.name.split("-")[0]), os.path.join(self.raw_path))
+        # file_path = os.path.join(self.raw_dir, "HeCo-main.zip")
+        # if not os.path.exists(file_path):
+        #     download(self.url, path=file_path)
+        # with zipfile.ZipFile(file_path, "r") as f:
+        #     f.extractall(self.raw_dir)
+        # print(self.raw_dir)
+        # print(self.raw_path)
+        # shutil.copytree(
+        #     os.path.join(self.raw_dir, "HeCo-main", "data", self.name.split("-")[0]),
+        #     os.path.join(self.raw_path),
+        # )
+        pass
 
     def save(self):
         # save_graphs(os.path.join(self.save_path,
@@ -81,7 +93,10 @@ class HeCoDataset(DGLDataset):
                 mask = generate_mask_tensor(idx2mask(idx, n))
                 self.g.nodes[self.predict_ntype].data[f"{split}_mask_{rate}"] = mask
         pos_i, pos_j = sp.load_npz(os.path.join(self.raw_path, "pos.npz")).nonzero()
-        self.pos_i, self.pos_j = torch.from_numpy(pos_i).long(), torch.from_numpy(pos_j).long()
+        self.pos_i, self.pos_j = (
+            torch.from_numpy(pos_i).long(),
+            torch.from_numpy(pos_j).long(),
+        )
 
     def _read_edges(self):
         edges = {}
@@ -232,6 +247,15 @@ class FreebaseHeCoDataset(HeCoDataset):
 
     def __init__(self):
         super().__init__("freebase", ["movie", "author", "director", "writer"])
+
+    def _read_feats(self):
+        feats = {}
+        for t in self._ntypes.values():
+            num_t = self.g.num_nodes(t)
+            feats[t] = torch.from_numpy(sp.eye(num_t).toarray()).float()
+        return feats
+
+        # freebased don't have feature, we need to self-define the feature
 
     @property
     def metapaths(self):

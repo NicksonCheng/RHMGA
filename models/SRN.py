@@ -27,6 +27,7 @@ class HeCoGATConv(nn.Module):
             attn_r = self.attn_drop(self.attn_r)
             el = (feat_src * attn_l).sum(dim=-1).unsqueeze(dim=-1)  # (N_src, 1)
             er = (feat_dst * attn_r).sum(dim=-1).unsqueeze(dim=-1)  # (N_dst, 1)
+
             g.srcdata.update({"ft": feat_src, "el": el})
             g.dstdata["er"] = er
             g.apply_edges(fn.u_add_v("el", "er", "e"))
@@ -41,10 +42,15 @@ class HeCoGATConv(nn.Module):
             return ret
 
 
+## only cared about in_dim
 class SemanticAttention(nn.Module):
     def __init__(self, in_dim, hidden_dim=128):
         super(SemanticAttention, self).__init__()
-        self.seq = nn.Sequential(nn.Linear(in_dim, hidden_dim, bias=True), nn.Tanh(), nn.Linear(hidden_dim, 1, bias=False))  # weight sum
+        self.seq = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim, bias=True),
+            nn.Tanh(),
+            nn.Linear(hidden_dim, 1, bias=False),
+        )  # weight sum
         return
 
     def forward(self, z_m):
@@ -56,7 +62,18 @@ class SemanticAttention(nn.Module):
 
 
 class Schema_Relation_Network(nn.Module):
-    def __init__(self, num_relations, hidden_dim, out_dim, num_heads, num_out_heads, num_layer, dropout, weight_T, enc_dec):
+    def __init__(
+        self,
+        num_relations,
+        hidden_dim,
+        out_dim,
+        num_heads,
+        num_out_heads,
+        num_layer,
+        dropout,
+        weight_T,
+        enc_dec,
+    ):
         super(Schema_Relation_Network, self).__init__()
         self.hidden_dim = hidden_dim
         self.weight_T = weight_T
@@ -70,22 +87,35 @@ class Schema_Relation_Network(nn.Module):
             ]
         )
 
-        if enc_dec == "encocder":
-            self.semantic_attention = SemanticAttention(in_dim=out_dim)
-        else:
-            self.semantic_attention = SemanticAttention(in_dim=hidden_dim)
-            self.trans = nn.Linear(hidden_dim, out_dim)
+        self.semantic_attention = SemanticAttention(in_dim=hidden_dim)
+        self.decoder_trans = nn.Linear(hidden_dim, out_dim)
 
-    def forward(self, sc_subgraphs, dst_feat, feats, enc_dec="encoder"):
-        # Linear Transformation to same dimension
+    def forward(self, graph, relations, dst_ntype, dst_feat, features, enc_dec="encoder"):
+
+        ## Linear Transformation to same dimension
+        sc_subgraphs = {}
+
+        for rels in relations:
+            ## dst_ntype include in relaions, then take its neighbor ntype as subgraph
+            if dst_ntype == rels[2]:
+                ntype = rels[0]
+                sc_subgraphs[ntype] = graph[rels]
+
         if enc_dec == "encoder":
-            dst_feat = self.weight_T[0](dst_feat)
+            dst_feat = self.weight_T[dst_ntype](dst_feat)
+        neighbors_feat = {
+            ntype: self.weight_T[ntype](feat)
+            for ntype, feat in features.items()
+            if ntype != dst_ntype
+        }
+        ## aggregate the neighbor based on the relation
         z_r = []
-        neighbors_feats = list(feats.values())
-        neighbors_feats = [self.weight_T[idx](feat) for idx, feat in enumerate(neighbors_feats)]
-        # print(feats.keys())
-        for i in range(len(sc_subgraphs)):
-            z_r.append(self.gats[i](sc_subgraphs[i], neighbors_feats[i + 1], dst_feat))
+
+        for i, (ntype, subgraph) in enumerate(sc_subgraphs.items()):
+            z_r.append(self.gats[i](subgraph, neighbors_feat[ntype], dst_feat))
+        ## semantic aggregation with all relation-based embedding
         z_r = torch.stack(z_r, dim=1)
         z = self.semantic_attention(z_r)
+        if enc_dec == "decoder":
+            z = self.decoder_trans(z)
         return z

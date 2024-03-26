@@ -23,7 +23,20 @@ class MultiLayerPerception(nn.Module):
         return x
 
 
-def module_selection(num_m, num_relations, in_dim, hidden_dim, out_dim, num_heads, num_out_heads, num_layer, dropout, module_type, weight_T, enc_dec):
+def module_selection(
+    num_m,
+    num_relations,
+    in_dim,
+    hidden_dim,
+    out_dim,
+    num_heads,
+    num_out_heads,
+    num_layer,
+    dropout,
+    module_type,
+    weight_T,
+    enc_dec,
+):
     if module_type == "HAN":
         return HAN(
             num_metapaths=num_m,
@@ -66,9 +79,9 @@ def module_selection(num_m, num_relations, in_dim, hidden_dim, out_dim, num_head
         return MultiLayerPerception(input_dim=in_dim, output_dim=out_dim)
 
 
-class HGAE(nn.Module):
-    def __init__(self, num_metapath, num_relations, target_in_dim, all_in_dim, args):
-        super(HGAE, self).__init__()
+class HGARME(nn.Module):
+    def __init__(self, num_metapath, num_relations, all_types, target_in_dim, all_in_dim, args):
+        super(HGARME, self).__init__()
         self.mask_rate = args.mask_rate
         self.target_in_dim = target_in_dim
         self.all_in_dim = all_in_dim
@@ -80,6 +93,8 @@ class HGAE(nn.Module):
         self.decoder_type = args.decoder
         self.dropout = args.dropout
         self.gamma = args.gamma
+
+        self.all_types = all_types
 
         # encoder/decoder hidden dimension
         if self.encoder_type == "HAN":
@@ -96,8 +111,9 @@ class HGAE(nn.Module):
         self.dec_heads = self.num_out_heads
 
         ## project all type of node into same dimension
-        self.weight_T = nn.ModuleList([nn.Linear(dim, self.hidden_dim) for dim in self.all_in_dim])
-
+        self.weight_T = nn.ModuleDict(
+            {t: nn.Linear(all_in_dim[t], self.hidden_dim) for t in self.all_types}
+        )
         self.encoder = module_selection(
             num_m=num_metapath,
             num_relations=num_relations,
@@ -131,50 +147,63 @@ class HGAE(nn.Module):
         )
         self.criterion = partial(cosine_similarity, gamma=args.gamma)
 
-    def forward(self, mp_subgraphs, sc_subgraphs, x, ntype):
-        predicted_x, mask_nodes = self.mask_attribute_prediction(mp_subgraphs, sc_subgraphs, x, ntype)
-        loss = self.criterion(x[ntype][mask_nodes], predicted_x[mask_nodes])
-        return loss
+    def forward(self, graph, relations, mp_subgraphs, x):
+        predicted_x, ntypes_mask_nodes = self.mask_attribute_prediction(
+            graph, relations, mp_subgraphs, x
+        )
+        all_type_reconstruction_loss = 0
+        for t in self.all_types:
+            mask_nodes = ntypes_mask_nodes[t]
+            print(x[t][mask_nodes].shape)
+            print(predicted_x[t][mask_nodes].shape)
+            ntype_loss = self.criterion(x[t][mask_nodes], predicted_x[t][mask_nodes])
+            print(ntype_loss)
+            all_type_reconstruction_loss += ntype_loss
+        return all_type_reconstruction_loss
 
-    def mask_edge_prediction(self, mp_subgraphs, x):
+    def mask_edge_prediction(self, x):
         pass
 
-    def mask_attribute_prediction(self, mp_subgraphs, sc_subgraphs, x, ntype):
+    def mask_attribute_prediction(self, graph, relations, mp_subgraphs, x):
         # x represent all node features
         # use_x represent target predicted node's features
-        use_x, (mask_nodes, keep_nodes) = self.encode_mask_noise(mp_subgraphs, x[ntype])
-        if self.encoder_type == "HAN":
-            enc_rep = self.encoder(mp_subgraphs, use_x)
-        elif self.encoder_type == "SRN":
-            enc_rep = self.encoder(sc_subgraphs, use_x, x, "encoder")
-        elif self.encoder_type == "HAN_SRN":
-            enc_rep = self.encoder(mp_subgraphs, sc_subgraphs, use_x, x, "encoder")
-        hidden_rep = self.encoder_to_decoder(enc_rep)
-        # remask
-        hidden_rep[mask_nodes] = 0.0
+        ntypes_use_x, (ntypes_mask_nodes, ntypes_keep_nodes) = self.encode_mask_noise(graph, x)
+        ntypes_dec_rep = {}
+        for use_ntype, use_x in ntypes_use_x.items():
+            mask_nodes = ntypes_mask_nodes[use_ntype]
+            if self.encoder_type == "HAN":
+                enc_rep = self.encoder(mp_subgraphs, x)
+            elif self.encoder_type == "SRN":
+                enc_rep = self.encoder(graph, relations, use_ntype, use_x, x, "encoder")
+            hidden_rep = self.encoder_to_decoder(enc_rep)
+            # remask
+            hidden_rep[mask_nodes] = 0.0
+            # decoder module
+            if self.decoder_type == "HAN":
+                dec_rep = self.decoder(mp_subgraphs, hidden_rep)
+            elif self.decoder_type == "SRN":
+                dec_rep = self.decoder(graph, relations, use_ntype, hidden_rep, x, "decoder")
+            elif self.decoder_type == "MLP":
+                dec_rep = self.decoder(hidden_rep)
+            ntypes_dec_rep[use_ntype] = dec_rep
+        ## return all type nodes representation
+        return ntypes_dec_rep, ntypes_mask_nodes
 
-        # decoder module
-        if self.decoder_type == "HAN":
-            dec_rep = self.decoder(mp_subgraphs, hidden_rep)
-        elif self.decoder_type == "SRN":
-            dec_rep = self.decoder(sc_subgraphs, hidden_rep, x, "decoder")
+    def encode_mask_noise(self, graph, x):
+        ntypes_mask_x = {}
+        ntypes_mask_nodes = {}
+        ntypes_keep_nodes = {}
+        for t in self.all_types:
+            ntype_x = x[t]
+            num_nodes = graph.num_nodes(t)
+            permutation = torch.randperm(num_nodes, device=ntype_x.device)
+            num_mask_nodes = int(self.mask_rate * num_nodes)
+            mask_nodes = permutation[:num_mask_nodes]
+            keep_nodes = permutation[num_mask_nodes:]
 
-        elif self.decoder_type == "HAN_SRN":
-            # print("enter HAN SRN")
-            dec_rep = self.decoder(mp_subgraphs, sc_subgraphs, hidden_rep, x, "decoder")
-        elif self.decoder_type == "MLP":
-            dec_rep = self.decoder(hidden_rep)
-        # print(x[mask_nodes])
-        # print(dec_rep[mask_nodes])
-        return dec_rep, mask_nodes
-
-    def encode_mask_noise(self, mp_subgraphs, ntype_x):
-        num_nodes = mp_subgraphs[0].num_nodes()
-        permutation = torch.randperm(num_nodes, device=ntype_x.device)
-        num_mask_nodes = int(self.mask_rate * num_nodes)
-        mask_nodes = permutation[:num_mask_nodes]
-        keep_nodes = permutation[num_mask_nodes:]
-
-        mask_x = ntype_x.clone()
-        mask_x[mask_nodes] = 0.0
-        return mask_x, (mask_nodes, keep_nodes)
+            mask_x = ntype_x.clone()
+            mask_x[mask_nodes] = 0.0
+            ntypes_mask_x[t] = mask_x
+            ntypes_mask_nodes[t] = mask_nodes
+            ntypes_keep_nodes[t] = keep_nodes
+        return ntypes_mask_x, (ntypes_mask_nodes, ntypes_keep_nodes)

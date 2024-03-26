@@ -56,7 +56,7 @@ heco_freebase:
   mask_rate: 0.5
   dropout: 0.4
   encoder: "SRN"
-  decoder: "HAN"
+  decoder: "SRN"
   weight_decay: 0.0001
   eva_lr: 0.01
   eva_wd: 0.0001
