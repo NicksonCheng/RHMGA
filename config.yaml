@@ -61,7 +61,7 @@ heco_freebase:
   eva_lr: 0.01
   eva_wd: 0.0001
   gamma: 3
-  devices: 0
+  devices: "cuda"
   num_layer: 3
   num_heads: 8
   num_out_heads: 1

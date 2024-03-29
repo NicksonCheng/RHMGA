@@ -1,4 +1,5 @@
 from datetime import datetime
+import os
 import argparse
 import yaml
 import dgl
@@ -9,6 +10,7 @@ import torch.optim as optim
 import torch.nn.functional as F
 import numpy as np
 import matplotlib.pyplot as plt
+from dgl.dataloading import DataLoader, MultiLayerFullNeighborSampler
 from utils.preprocess_DBLP import DBLP4057Dataset, DBLPFourAreaDataset
 from utils.preprocess_ACM import ACMDataset
 from utils.preprocess_HeCo import (
@@ -22,9 +24,11 @@ from models.HGARME import HGARME
 from models.HAN import HAN
 from tqdm import tqdm
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-device_0 = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-device_1 = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
+
+device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+# device_0 = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+# device_1 = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 heterogeneous_dataset = {
     "dblp": DBLPFourAreaDataset,
     "acm": ACMDataset,
@@ -122,19 +126,19 @@ def train(args):
     metapaths = data.metapaths
     relations = heterogeneous_dataset[args.dataset]["relations"]
     graph = data[0]
-    sc_subgraphs = [graph[rels].to(device) for rels in relations]
+    all_types = list(data._ntypes.values())
     mp_subgraphs = [
         dgl.metapath_reachable_graph(graph, metapath).to(device) for metapath in metapaths
     ]  # homogeneous graph divide by metapaths
-    graph = graph.to(device)
-    all_types = list(data._ntypes.values())
+    features = {t: graph.nodes[t].data["feat"] for t in all_types if "feat" in graph.nodes[t].data}
+    train_nids = {ntype: torch.arange(graph.num_nodes(ntype)) for ntype in all_types}
+    sampler = MultiLayerFullNeighborSampler(1)
+    dataloader = DataLoader(
+        graph, train_nids, sampler, batch_size=1024, shuffle=True, num_workers=4
+    )
+
     target_type = data.predict_ntype
     num_classes = data.num_classes
-    features = {
-        t: graph.nodes[t].data["feat"].to(device)
-        for t in all_types
-        if "feat" in graph.nodes[t].data
-    }
     target_type_labels = graph.nodes[target_type].data["label"]
     label_ratio = ["20", "40", "60"]
     train_mask = {
@@ -152,11 +156,13 @@ def train(args):
         num_relations=len(relations),
         all_types=all_types,
         target_in_dim=features[target_type].shape[1],
-        all_in_dim={ntype: feat.shape[1] for ntype, feat in features.items()},
+        ntype_in_dim={ntype: feat.shape[1] for ntype, feat in features.items()},
         args=args,
     )
+    # if torch.cuda.is_available() and torch.cuda.device_count() > 1:
+    #     model = nn.DataParallel(model)
+    model = model.to(device)
     optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-
     if args.scheduler:
         # scheduler = torch.optim.lr_scheduler.ExponentialLR(
         #     optimizer, gamma=0.99)
@@ -168,9 +174,6 @@ def train(args):
         # else ( 1 + np.cos((epoch - warmup_steps) * np.pi / (max_epoch - warmup_steps))) * 0.5
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=scheduler)
 
-    if torch.cuda.is_available() and torch.cuda.device_count() > 1:
-        model = nn.DataParallel(model)
-    model = model.to(device)
     performance = {
         "20": {"Acc": [], "Macro-F1": [], "Micro-F1": []},
         "40": {"Acc": [], "Macro-F1": [], "Micro-F1": []},
@@ -179,18 +182,40 @@ def train(args):
     log_times = datetime.now().strftime("[%Y-%m-%d_%H:%M:%S]")
     for epoch in range(args.epoches):
         model.train()
+        train_loss = 0.0
+        for i, mini_batch in tqdm(enumerate(dataloader)):
+            src_nodes, dst_nodes, subgs = mini_batch
+            src_nodes_feats = {
+                ntype: subgs[0].srcdata["feat"][ntype].to(device)
+                for ntype, indices in src_nodes.items()
+            }
+            dst_nodes_feats = {
+                ntype: subgs[0].dstdata["feat"][ntype].to(device)
+                for ntype, indices in dst_nodes.items()
+            }
 
-        loss = model(graph, relations, mp_subgraphs, features)
+            # for ntype, nodes in src_nodes.items():
+            #     print(ntype, src_nodes_feats[ntype].shape)
+            # print("----------------------------------")
+            # for ntype, nodes in dst_nodes.items():
+            #     print(ntype, dst_nodes_feats[ntype].shape)
+            # print("----------------------------------")
+            # print(subgs)
+            # print("-----------------------------------")
+            subgs = [subg.to(device) for subg in subgs]
 
-        optimizer.zero_grad()
-        # output = model(mp_subgraphs, features[target_type])
-        # output = output.cpu()
-        # loss = F.cross_entropy(output[train_mask], target_type_labels[train_mask])
-        loss.backward()
-        optimizer.step()
-        scheduler.step()
-
-        print(f"Epoch:{epoch} Training Loss:{loss.item()} learning_rate={scheduler.get_last_lr()}")
+            loss = model(subgs[0], relations, mp_subgraphs, src_nodes_feats, dst_nodes_feats)
+            train_loss += loss.item()
+            optimizer.zero_grad()
+            # output = model(mp_subgraphs, features[target_type])
+            # output = output.cpu()
+            # loss = F.cross_entropy(output[train_mask], target_type_labels[train_mask])
+            loss.backward()
+            optimizer.step()
+            scheduler.step()
+        print(
+            f"Epoch:{epoch+1}/{args.epoches} Training Loss:{train_loss/len(dataloader)} Learning_rate={scheduler.get_last_lr()}"
+        )
         if epoch > 0 and (epoch + 1) % 20 == 0:
             with open(
                 f"./log/{args.encoder}+{args.decoder}_{args.dataset}_{log_times}.txt",
@@ -205,11 +230,7 @@ def train(args):
                     if args.encoder == "HAN":
                         enc_feat = model.encoder(mp_subgraphs, features[target_type])
                     elif args.encoder == "SRN":
-                        enc_feat = model.encoder(sc_subgraphs, features[target_type], features)
-                    elif args.encoder == "HAN_SRN":
-                        enc_feat = model.encoder(
-                            mp_subgraphs, sc_subgraphs, features[target_type], features
-                        )
+                        enc_feat = model.encoder(graph, relations, features[target_type], features)
 
                     max_acc, max_micro, max_macro = node_classification_evaluate(
                         enc_feat,
@@ -275,7 +296,7 @@ if __name__ == "__main__":
     if args.use_config:
         args = load_config(args, "config.yaml")
     print(args)
-
-    device_0 = torch.device(f"cuda:{args.devices}" if torch.cuda.is_available() else "cpu")
-    device_1 = torch.device(f"cuda:{args.devices ^ 1}" if torch.cuda.is_available() else "cpu")
+    device = torch.device(args.devices if torch.cuda.is_available() else "cpu")
+    # device_0 = torch.device(f"cuda:{args.devices}" if torch.cuda.is_available() else "cpu")
+    # device_1 = torch.device(f"cuda:{args.devices ^ 1}" if torch.cuda.is_available() else "cpu")
     train(args=args)
