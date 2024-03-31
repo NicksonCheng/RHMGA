@@ -68,7 +68,7 @@ class SemanticAttention(nn.Module):
 class Schema_Relation_Network(nn.Module):
     def __init__(
         self,
-        num_relations,
+        relations,
         hidden_dim,
         ntype_out_dim,
         num_heads,
@@ -81,14 +81,17 @@ class Schema_Relation_Network(nn.Module):
         super(Schema_Relation_Network, self).__init__()
         self.hidden_dim = hidden_dim
         self.weight_T = weight_T
-        self.gats = nn.ModuleList(
-            [
+        ## the relation and reverse relation will used same gats temporary, maybe used diffferent gat later
+        self.gats = nn.ModuleDict(
+            {
                 # torch_geometric GATConv(in_channels=in_dim,out_channels=hidden_dim,heads=num_heads,dropout=dropout)
                 # GATConv(in_feats=in_dim, out_feats=out_dim, num_heads=num_heads,
                 #         feat_drop=dropout, attn_drop=dropout, activation=F.elu)
-                HeCoGATConv(hidden_dim=self.hidden_dim, attn_drop=0.3, activation=F.elu)
-                for _ in range(num_relations)
-            ]
+                rel_tuple[1]: HeCoGATConv(
+                    hidden_dim=self.hidden_dim, attn_drop=0.3, activation=F.elu
+                )
+                for rel_tuple in relations
+            }
         )
 
         self.semantic_attention = SemanticAttention(in_dim=hidden_dim)
@@ -99,16 +102,17 @@ class Schema_Relation_Network(nn.Module):
                 {ntype: nn.Linear(hidden_dim, out_dim) for ntype, out_dim in ntype_out_dim.items()}
             )
 
-    def forward(self, graph, relations, dst_ntype, dst_feat, src_feat, enc_dec="encoder"):
-
+    def forward(
+        self,
+        rels_subgraphs,
+        relations,
+        dst_ntype,
+        dst_feat,
+        src_feat,
+        enc_dec="encoder",
+        recons_type="nf_recons",
+    ):
         ## Linear Transformation to same dimension
-        sc_subgraphs = {}
-
-        for rels in relations:
-            ## dst_ntype include in relaions, then take its neighbor ntype as subgraph
-            if dst_ntype == rels[2]:
-                ntype = rels[0]
-                sc_subgraphs[ntype] = graph[rels]
         if enc_dec == "encoder":
             dst_feat = self.weight_T[dst_ntype](dst_feat)
         neighbors_feat = {
@@ -117,11 +121,17 @@ class Schema_Relation_Network(nn.Module):
             if ntype != dst_ntype
         }
         ## aggregate the neighbor based on the relation
-        z_r = []
-        for i, (ntype, subgraph) in enumerate(sc_subgraphs.items()):
-            z_r.append(self.gats[i](subgraph, neighbors_feat[ntype], dst_feat))
+        z_r = {}
+        for rel, rel_graph in rels_subgraphs.items():
+            subgraph = rel_graph["graph"]
+            src_ntype = rel_graph["src_ntype"]
+            original_rel = rel_graph["original_rel"]
+            z_r[rel] = self.gats[original_rel](subgraph, neighbors_feat[src_ntype], dst_feat)
         ## semantic aggregation with all relation-based embedding
-        z_r = torch.stack(z_r, dim=1)
+        ## if this is edge reconstruction, we do not used semantic aggreagation, just return the z_r
+        if enc_dec == "decoder" and recons_type == "adj_recons":
+            return z_r
+        z_r = torch.stack(list(z_r.values()), dim=1)
         z = self.semantic_attention(z_r)
 
         if enc_dec == "decoder":

@@ -1,5 +1,6 @@
 """Heterogeneous Graph Attention Network (HAN)
 """
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -14,7 +15,11 @@ from dgl.ops import edge_softmax
 class SemanticAttention(nn.Module):
     def __init__(self, in_dim, hidden_dim=128):
         super(SemanticAttention, self).__init__()
-        self.seq = nn.Sequential(nn.Linear(in_dim, hidden_dim, bias=True), nn.Tanh(), nn.Linear(hidden_dim, 1, bias=False))  # weight sum
+        self.seq = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim, bias=True),
+            nn.Tanh(),
+            nn.Linear(hidden_dim, 1, bias=False),
+        )  # weight sum
         return
 
     def forward(self, z_m):
@@ -66,14 +71,23 @@ class HANLayer(nn.Module):
         self.gats = nn.ModuleList(
             [
                 # torch_geometric GATConv(in_channels=in_dim,out_channels=hidden_dim,heads=num_heads,dropout=dropout)
-                GATConv(in_feats=in_dim, out_feats=out_dim, num_heads=num_heads, feat_drop=dropout, attn_drop=dropout, activation=F.elu)
+                GATConv(
+                    in_feats=in_dim,
+                    out_feats=out_dim,
+                    num_heads=num_heads,
+                    feat_drop=dropout,
+                    attn_drop=dropout,
+                    activation=F.elu,
+                )
                 for _ in range(num_metapaths)
             ]
         )
         self.semantic_attention = SemanticAttention(in_dim=out_dim * num_heads)
 
     def forward(self, subgraphs, h):
-        z_m = [gat(s_g, h).flatten(start_dim=1) for gat, s_g in zip(self.gats, subgraphs)]  # N * K*d_out for each metapath
+        z_m = [
+            gat(s_g, h).flatten(start_dim=1) for gat, s_g in zip(self.gats, subgraphs)
+        ]  # N * K*d_out for each metapath
         z_m = torch.stack(z_m, dim=1)  # N * M * K*d_out (4057,3,128)
         z = self.semantic_attention(z_m)  # N * K*d_iyt (4057, 128)
 
@@ -82,7 +96,18 @@ class HANLayer(nn.Module):
 
 class Metapath_Relation_Network(nn.Module):
     def __init__(
-        self, num_metapaths, num_relations, hidden_dim, out_dim, num_han_layer, num_srn_layer, num_heads, num_out_heads, dropout, weight_T, enc_dec
+        self,
+        num_metapaths,
+        num_relations,
+        hidden_dim,
+        out_dim,
+        num_han_layer,
+        num_srn_layer,
+        num_heads,
+        num_out_heads,
+        dropout,
+        weight_T,
+        enc_dec,
     ):
         super(Metapath_Relation_Network, self).__init__()
 
@@ -105,21 +130,45 @@ class Metapath_Relation_Network(nn.Module):
         self.han_layers = nn.ModuleList()
         if num_han_layer == 1:
             self.han_layers.append(
-                HANLayer(num_metapaths=num_metapaths, in_dim=hidden_dim, out_dim=self.han_out_dim, num_heads=num_out_heads, dropout=dropout)
+                HANLayer(
+                    num_metapaths=num_metapaths,
+                    in_dim=hidden_dim,
+                    out_dim=self.han_out_dim,
+                    num_heads=num_out_heads,
+                    dropout=dropout,
+                )
             )
         else:
-            self.han_layers.append(HANLayer(num_metapaths=num_metapaths, in_dim=hidden_dim, out_dim=hidden_dim, num_heads=num_heads, dropout=dropout))
+            self.han_layers.append(
+                HANLayer(
+                    num_metapaths=num_metapaths,
+                    in_dim=hidden_dim,
+                    out_dim=hidden_dim,
+                    num_heads=num_heads,
+                    dropout=dropout,
+                )
+            )
             for layer in range(1, num_han_layer - 1):
                 self.han_layers.append(
-                    HANLayer(num_metapaths=num_metapaths, in_dim=hidden_dim * num_heads, out_dim=hidden_dim, num_heads=num_heads, dropout=dropout)
+                    HANLayer(
+                        num_metapaths=num_metapaths,
+                        in_dim=hidden_dim * num_heads,
+                        out_dim=hidden_dim,
+                        num_heads=num_heads,
+                        dropout=dropout,
+                    )
                 )
             self.han_layers.append(
                 HANLayer(
-                    num_metapaths=num_metapaths, in_dim=hidden_dim * num_heads, out_dim=self.han_out_dim, num_heads=num_out_heads, dropout=dropout
+                    num_metapaths=num_metapaths,
+                    in_dim=hidden_dim * num_heads,
+                    out_dim=self.han_out_dim,
+                    num_heads=num_out_heads,
+                    dropout=dropout,
                 )
             )
 
-    def forward(self, mp_subgraphs, sc_subgraphs, dst_feat, feats, enc_dec="encoder"):
+    def forward(self, mp_subgraphs, rels_subgraphs, dst_feat, feats, enc_dec="encoder"):
         ### SRN Module
         # Linear Transformation to same dimension
         if enc_dec == "encoder":
@@ -129,8 +178,8 @@ class Metapath_Relation_Network(nn.Module):
         neighbors_feats = list(feats.values())
         neighbors_feats = [self.weight_T[idx](feat) for idx, feat in enumerate(neighbors_feats)]
         # print(feats.keys())
-        for i in range(len(sc_subgraphs)):
-            z_r.append(self.srns[i](sc_subgraphs[i], neighbors_feats[i + 1], dst_feat))
+        for i in range(len(rels_subgraphs)):
+            z_r.append(self.srns[i](rels_subgraphs[i], neighbors_feats[i + 1], dst_feat))
 
         z_r = torch.stack(z_r, dim=1)
 

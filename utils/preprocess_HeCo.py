@@ -85,7 +85,6 @@ class HeCoDataset(DGLDataset):
         labels = torch.from_numpy(np.load(os.path.join(self.raw_path, "labels.npy"))).long()
         self._num_classes = labels.max().item() + 1
         self.g.nodes[self.predict_ntype].data["label"] = labels
-
         n = self.g.num_nodes(self.predict_ntype)
         for split in ("train", "val", "test"):
             for rate in [20, 40, 60]:
