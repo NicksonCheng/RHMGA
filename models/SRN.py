@@ -29,11 +29,13 @@ class HeCoGATConv(nn.Module):
             er = (feat_dst * attn_r).sum(dim=-1).unsqueeze(dim=-1)  # (N_dst, 1)
             # print(el.shape)
             # print(er.shape)
-
-            # print(g.srcdata["feat"].shape)
-            # print(g.dstdata["feat"].shape)
+            # print("--------------------------")
+            # print(f"src feat: {g.srcdata['feat'].shape}")
+            # print(f"src feat: {g.dstdata['feat'].shape}")
+            # print("--------------------------")
             g.srcdata.update({"ft": feat_src, "el": el})
             g.dstdata["er"] = er
+            # compute edge attention, el and er are a_l Wh_i and a_r Wh_j respectively.
             g.apply_edges(fn.u_add_v("el", "er", "e"))
             e = self.leaky_relu(g.edata.pop("e"))
             g.edata["a"] = edge_softmax(g, e)  # (E, 1)
@@ -87,9 +89,7 @@ class Schema_Relation_Network(nn.Module):
                 # torch_geometric GATConv(in_channels=in_dim,out_channels=hidden_dim,heads=num_heads,dropout=dropout)
                 # GATConv(in_feats=in_dim, out_feats=out_dim, num_heads=num_heads,
                 #         feat_drop=dropout, attn_drop=dropout, activation=F.elu)
-                rel_tuple[1]: HeCoGATConv(
-                    hidden_dim=self.hidden_dim, attn_drop=0.3, activation=F.elu
-                )
+                rel_tuple[1]: HeCoGATConv(hidden_dim=self.hidden_dim, attn_drop=0.3, activation=F.elu)
                 for rel_tuple in relations
             }
         )
@@ -98,9 +98,7 @@ class Schema_Relation_Network(nn.Module):
 
         ## out_dim has different type of nodes
         if enc_dec == "decoder":
-            self.ntypes_decoder_trans = nn.ModuleDict(
-                {ntype: nn.Linear(hidden_dim, out_dim) for ntype, out_dim in ntype_out_dim.items()}
-            )
+            self.ntypes_decoder_trans = nn.ModuleDict({ntype: nn.Linear(hidden_dim, out_dim) for ntype, out_dim in ntype_out_dim.items()})
 
     def forward(
         self,
@@ -115,11 +113,7 @@ class Schema_Relation_Network(nn.Module):
         ## Linear Transformation to same dimension
         if enc_dec == "encoder":
             dst_feat = self.weight_T[dst_ntype](dst_feat)
-        neighbors_feat = {
-            ntype: self.weight_T[ntype](feat)
-            for ntype, feat in src_feat.items()
-            if ntype != dst_ntype
-        }
+        neighbors_feat = {ntype: self.weight_T[ntype](feat) for ntype, feat in src_feat.items() if ntype != dst_ntype}
         ## aggregate the neighbor based on the relation
         z_r = {}
         for rel, rel_graph in rels_subgraphs.items():

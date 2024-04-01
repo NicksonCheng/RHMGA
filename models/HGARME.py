@@ -98,9 +98,7 @@ class HGARME(nn.Module):
         self.dec_heads = self.num_out_heads
 
         ## project all type of node into same dimension
-        self.weight_T = nn.ModuleDict(
-            {t: nn.Linear(self.ntype_in_dim[t], self.hidden_dim) for t in self.all_types}
-        )
+        self.weight_T = nn.ModuleDict({t: nn.Linear(self.ntype_in_dim[t], self.hidden_dim) for t in self.all_types})
         self.encoder = module_selection(
             num_m=num_metapath,
             relations=relations,
@@ -135,9 +133,7 @@ class HGARME(nn.Module):
 
     def initial_enc_dec_dim(self, relations):
         self.encoder_to_decoder = nn.Linear(self.dec_in_dim, self.dec_in_dim, bias=False)
-        self.edge_recons_encoder_to_decoder = nn.Linear(
-            self.dec_in_dim, self.dec_in_dim, bias=False
-        )
+        self.edge_recons_encoder_to_decoder = nn.Linear(self.dec_in_dim, self.dec_in_dim, bias=False)
         # ntype_dst_enc_dec={}
 
         # for ntype in self.all_types:
@@ -154,11 +150,11 @@ class HGARME(nn.Module):
             ## Code that may raise a CUDA runtime error
             ## calculate node feature reconstruction loss
 
-            # node_feature_recons_loss = self.mask_attribute_reconstruction(
-            #     graph, relations, mp_subgraphs, src_x, dst_x
-            # )
+            node_feature_recons_loss = self.mask_attribute_reconstruction(graph, relations, mp_subgraphs, src_x, dst_x)
+            print("node_feature_recons_loss", node_feature_recons_loss)
 
-            adjmatrix_recons_loss = self.mask_edge_reconstruction(graph, relations, src_x, dst_x)
+            # adjmatrix_recons_loss = self.mask_edge_reconstruction(graph, relations, src_x, dst_x)
+            # print("adjmatrix_recons_loss", adjmatrix_recons_loss)
             ## calculate adjacent matrix reconstruction loss
 
             return node_feature_recons_loss + adjmatrix_recons_loss
@@ -183,25 +179,30 @@ class HGARME(nn.Module):
             for rel in mask_rels_subgraphs.keys():
                 mask_rels_subgraphs[rel]["graph"] = drop_edge(mask_rels_subgraphs[rel]["graph"])
                 # src_ntype_enc_rep = self.encoder(masked_subgs, relations, ntype, x, src_x, "encoder","adj_recons")
-            enc_rep = self.encoder(
-                mask_rels_subgraphs, relations, ntype, x, src_x, "encoder", "adj_recons"
-            )
+            enc_rep = self.encoder(mask_rels_subgraphs, relations, ntype, x, src_x, "encoder", "adj_recons")
             # src_ntype_rep=[self.edge_recons_encoder_to_decoder[ntype][idx](enc_rep) for idx,enc_rep in enumerate(src_ntype_enc_rep)]
 
             rep = self.edge_recons_encoder_to_decoder(enc_rep)
 
             # src_ntype_dec_rep=self.decoder(masked_subgs, relations, ntype, src_ntype_rep, src_x, "decoder")
-            src_ntype_dec_rep = self.decoder(
-                mask_rels_subgraphs, relations, ntype, rep, src_x, "decoder", "adj_recons"
-            )
+            src_ntype_dec_rep = self.decoder(mask_rels_subgraphs, relations, ntype, rep, src_x, "decoder", "adj_recons")
             for rel, dec_rep in src_ntype_dec_rep.items():
                 all_rel_dec_rep[rel] = dec_rep
+        print("--------------------------")
         for rel, dec_rep in all_rel_dec_rep.items():
             print(rel, dec_rep.shape)
-        adj_matrix = dgl.to_scipy_sparse_matrix(graph)
-        adj_tensor = torch.tensor(adj_matrix.todense())
-        print(adj_tensor.shape)
-        exit()
+        print("--------------------------")
+        for rel_tuple in relations:
+            rel = rel_tuple[1]
+            reverse_rel = rel[::-1]
+            origin_adj_matrix = graph[rel].adj()
+            origin_adj_tensor = origin_adj_matrix.to_dense()
+
+            recon_adj_matrix = torch.mm(all_rel_dec_rep[reverse_rel], all_rel_dec_rep[rel].T)
+            print(recon_adj_matrix.shape)
+            print(origin_adj_matrix.shape)
+            ntype_adj_recons_loss = self.criterion(origin_adj_tensor, recon_adj_matrix)
+            all_adjmatrix_recons_loss += ntype_adj_recons_loss
         return all_adjmatrix_recons_loss
 
     def mask_attribute_reconstruction(self, graph, relations, mp_subgraphs, src_x, dst_x):
@@ -216,9 +217,7 @@ class HGARME(nn.Module):
             if self.encoder_type == "HAN":
                 enc_rep = self.encoder(mp_subgraphs, use_x)
             elif self.encoder_type == "SRN":
-                enc_rep = self.encoder(
-                    rels_subgraphs, relations, use_ntype, use_x, src_x, "encoder", "nf_recons"
-                )
+                enc_rep = self.encoder(rels_subgraphs, relations, use_ntype, use_x, src_x, "encoder", "nf_recons")
             hidden_rep = self.encoder_to_decoder(enc_rep)
             # remask
             hidden_rep[mask_nodes] = 0.0
@@ -226,9 +225,7 @@ class HGARME(nn.Module):
             if self.decoder_type == "HAN":
                 dec_rep = self.decoder(mp_subgraphs, hidden_rep)
             elif self.decoder_type == "SRN":
-                dec_rep = self.decoder(
-                    rels_subgraphs, relations, use_ntype, hidden_rep, src_x, "decoder"
-                )
+                dec_rep = self.decoder(rels_subgraphs, relations, use_ntype, hidden_rep, src_x, "decoder")
             elif self.decoder_type == "MLP":
                 dec_rep = self.decoder(hidden_rep)
             ## calculate all type nodes feature reconstruction
