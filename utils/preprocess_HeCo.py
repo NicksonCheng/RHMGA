@@ -45,27 +45,29 @@ class HeCoDataset(DGLDataset):
         super().__init__(name + "-heco", url)
 
     def download(self):
-        # file_path = os.path.join(self.raw_dir, "HeCo-main.zip")
-        # if not os.path.exists(file_path):
-        #     download(self.url, path=file_path)
-        # with zipfile.ZipFile(file_path, "r") as f:
-        #     f.extractall(self.raw_dir)
-        # print(self.raw_dir)
-        # print(self.raw_path)
-        # shutil.copytree(
-        #     os.path.join(self.raw_dir, "HeCo-main", "data", self.name.split("-")[0]),
-        #     os.path.join(self.raw_path),
-        # )
-        pass
+        file_path = os.path.join(self.raw_dir, "HeCo-main.zip")
+        if not os.path.exists(file_path):
+            download(self.url, path=file_path)
+        with zipfile.ZipFile(file_path, "r") as f:
+            f.extractall(self.raw_dir)
+        print(self.raw_dir)
+        print(self.raw_path)
+        shutil.copytree(
+            os.path.join(self.raw_dir, "HeCo-main", "data", self.name.split("-")[0]),
+            os.path.join(self.raw_path),
+        )
 
     def save(self):
-        # save_graphs(os.path.join(self.save_path,
-        #             self.name + '_dgl_graph.bin'), [self.g])
-        # save_info(os.path.join(self.raw_path, self.name + '_pos.pkl'),
-        #           {'pos_i': self.pos_i, 'pos_j': self.pos_j})
-        pass
+        if self.has_cache():
+            return
+        save_graphs(os.path.join(self.save_path, self.name + "_dgl_graph.bin"), [self.g])
+        save_info(
+            os.path.join(self.raw_path, self.name + "_pos.pkl"),
+            {"pos_i": self.pos_i, "pos_j": self.pos_j},
+        )
 
     def load(self):
+        print(f"load: {self.save_path}/{self.name} _dgl_graph.bin")
         graphs, _ = load_graphs(os.path.join(self.save_path, self.name + "_dgl_graph.bin"))
         self.g = graphs[0]
         ntype = self.predict_ntype
@@ -76,6 +78,8 @@ class HeCoDataset(DGLDataset):
         self.pos_i, self.pos_j = info["pos_i"], info["pos_j"]
 
     def process(self):
+        if self.has_cache():
+            return
         self.g = dgl.heterograph(self._read_edges())
 
         feats = self._read_feats()
