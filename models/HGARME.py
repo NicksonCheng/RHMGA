@@ -151,10 +151,12 @@ class HGARME(nn.Module):
 
     def forward(self, subgs, relations, mp_subgraphs):
         try:
+            node_feature_recons_loss = 0
+            adjmatrix_recons_loss = 0
             ## Calculate node feature reconstruction loss
-            node_feature_recons_loss = self.mask_attribute_reconstruction(
-                subgs[1], relations, mp_subgraphs
-            )
+            # node_feature_recons_loss = self.mask_attribute_reconstruction(
+            #     subgs[1], relations, mp_subgraphs
+            # )
             # print("node_feature_recons_loss", node_feature_recons_loss)
 
             adjmatrix_recons_loss = self.mask_edge_reconstruction(subgs, relations)

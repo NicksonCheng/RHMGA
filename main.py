@@ -210,7 +210,7 @@ def train(args):
         )
         if epoch > 0 and (epoch + 1) % 20 == 0:
             with open(
-                f"./log/{args.encoder}+{args.decoder}_{args.dataset}_{log_times}.txt",
+                f"./log/only_adj_recons_{args.dataset}_{log_times}.txt",
                 "a",
             ) as log_file:
                 result_acc = []
@@ -223,9 +223,11 @@ def train(args):
                     if args.encoder == "HAN":
                         enc_feat = model.encoder(mp_subgraphs, features[target_type])
                     elif args.encoder == "SRN":
+                        rels_subgraphs = model.seperate_relation_graph(
+                            graph, relations, target_type
+                        )
                         enc_feat = model.encoder(
-                            graph,
-                            relations,
+                            rels_subgraphs,
                             target_type,
                             features[target_type],
                             features,
@@ -296,7 +298,7 @@ if __name__ == "__main__":
     if args.use_config:
         args = load_config(args, "config.yaml")
     print(args)
-    device = torch.device(args.devices if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
     # device_0 = torch.device(f"cuda:{args.devices}" if torch.cuda.is_available() else "cpu")
     # device_1 = torch.device(f"cuda:{args.devices ^ 1}" if torch.cuda.is_available() else "cpu")
     train(args=args)
