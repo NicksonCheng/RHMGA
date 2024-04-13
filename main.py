@@ -1,6 +1,7 @@
 from datetime import datetime
 import time
 import os
+import sys
 import argparse
 import yaml
 import dgl
@@ -21,6 +22,7 @@ from utils.preprocess_HeCo import (
     FreebaseHeCoDataset,
 )
 from utils.evaluate import score, LogisticRegression, MLP
+from utils.utils import colorize, name_file
 from models.HGARME import HGARME
 from models.HAN import HAN
 from tqdm import tqdm
@@ -95,7 +97,7 @@ def node_classification_evaluate(
     val_accuracy = []
     best_val_acc = 0.0
     best_model_state_dict = None
-    for epoch in tqdm(range(args.eva_epoches), position=0):
+    for epoch in tqdm(range(args.eva_epoches), position=0, desc=colorize("Evaluating", "green")):
         classifier.train()
         train_output = classifier(emb["train"]).cpu()
         eva_loss = F.cross_entropy(train_output, labels["train"])
@@ -128,7 +130,7 @@ def train(args):
     start_t = time.time()
 
     device_0 = torch.device(f"cuda:{args.devices}" if torch.cuda.is_available() else "cpu")
-    device_1 = torch.device(f"cuda:{args.devices ^ 1}" if torch.cuda.is_available() else "cpu")
+    device_1 = torch.device(f"cuda:{args.devices}" if torch.cuda.is_available() else "cpu")
 
     data = heterogeneous_dataset[args.dataset]["name"]()
     print("Preprocessing Time taken:", time.time() - start_t, "seconds")
@@ -162,20 +164,28 @@ def train(args):
     # sampler = MultiLayerFullNeighborSampler(2)
     sampler = MultiLayerNeighborSampler([10, 5])
     dataloader = DataLoader(
-        graph, train_nids, sampler, batch_size=512, shuffle=True, num_workers=0, use_uva=False
+        graph,
+        train_nids,
+        sampler,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=0,
+        use_uva=False,
     )
-    # model = HAN(num_metapaths=len(metapaths), in_dim=features[target_type].shape[1], hidden_dim=args.num_hidden, out_dim=num_classes,
-    #            num_heads=args.num_heads, dropout=args.dropout)
     model = HGARME(
         num_metapath=len(metapaths),
         relations=relations,
+        target_type=target_type,
         all_types=all_types,
         target_in_dim=features[target_type].shape[1],
         ntype_in_dim={ntype: feat.shape[1] for ntype, feat in features.items()},
         args=args,
     )
-    if torch.cuda.is_available() and torch.cuda.device_count() > 1:
-        model = nn.DataParallel(model)
+    # if torch.cuda.is_available() and torch.cuda.device_count() > 1:
+    #     # model = nn.DataParallel(model)
+    #     model = torch.nn.parallel.DistributedDataParallel(
+    #         model, device_ids=[args.devices], output_device=args.devices
+    #     )
     model = model.to(device_0)
     optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     if args.scheduler:
@@ -196,16 +206,16 @@ def train(args):
     }
     print("Modeling Time taken:", time.time() - start_t, "seconds")
     log_times = datetime.now().strftime("[%Y-%m-%d_%H:%M:%S]")
-    for epoch in range(args.epoches):
+    for epoch in tqdm(range(args.epoches), desc=colorize("Epoch Training", "blue")):
         model.train()
         train_loss = 0.0
-        for i, mini_batch in tqdm(enumerate(dataloader)):
+        for i, mini_batch in enumerate(dataloader):
             src_nodes, dst_nodes, subgs = mini_batch
             # print("----------------------------------")
             # for subg in subgs:
             #     print(subg)
             # print("----------------------------------")
-            loss = model(subgs, relations, mp_subgraphs, args.edge_recons, args.feat_recons)
+            loss = model(subgs, relations, mp_subgraphs)
             train_loss += loss.item()
             optimizer.zero_grad()
 
@@ -218,21 +228,15 @@ def train(args):
         )
 
         ## Evaluate Embedding Performance
-        if True:
-
-            recons_type = "edge" if args.edge_recons else ""
-            recons_type += "_feat" if args.feat_recons else ""
-            with open(
-                f"./log/performance/HGARME({recons_type})_{args.dataset}_{log_times}.txt",
-                "a",
-            ) as log_file:
+        if epoch > 0 and ((epoch + 1) % args.eva_interval) == 0:
+            # if True:
+            file_name = name_file(args, "log", log_times)
+            with open(file_name, "a") as log_file:
                 result_acc = []
                 result_micro = []
                 result_macro = []
                 log_file.write(f"Epoches:{epoch}-----------------------------------\n")
                 for ratio in label_ratio:
-                    # features[target_type] = features[target_type].to(device_0)
-                    # features = {ntype: feat.to(device_0) for ntype, feat in features.items()}
                     if args.encoder == "HAN":
                         enc_feat = model.encoder(mp_subgraphs, features[target_type])
                     elif args.encoder == "SRN":
@@ -273,7 +277,7 @@ def train(args):
     ## plot the performance
     ####
     fig, axs = plt.subplots(1, len(label_ratio), figsize=(15, 5))
-    x_range = list(range(0, args.epoches + 1, 20))[1:]
+    x_range = list(range(0, args.epoches + 1, args.eva_interval))[1:]
     for i, ratio in enumerate(label_ratio):
         axs[i].set_title(f"Label Rate {ratio}%")
         axs[i].plot(x_range, performance[ratio]["Acc"], label="Acc")
@@ -282,14 +286,16 @@ def train(args):
         axs[i].legend()
         axs[i].set_xlabel("epoch")
     formatted_now = datetime.now().strftime("[%Y-%m-%d_%H:%M:%S]")
-    fig.savefig(f"./img/{args.encoder}+{args.decoder}_{args.dataset}_{formatted_now}.png")
+    file_name = name_file(args, "img", formatted_now)
+    fig.savefig(file_name)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser("Heterogeneous Project")
-    parser.add_argument("--devices", type=int, default=0)
     parser.add_argument("--dataset", type=str, default="dblp")
     parser.add_argument("--epoches", type=int, default=200)
+    parser.add_argument("--batch_size", type=int, default=128)
+    parser.add_argument("--eva_interval", type=int, default=10)
     parser.add_argument("--eva_epoches", type=int, default=50)
     parser.add_argument("--num_layer", type=int, default=3, help="number of model layer")
     parser.add_argument("--num_heads", type=int, default=8, help="number of attention heads")
@@ -297,20 +303,39 @@ if __name__ == "__main__":
         "--num_out_heads", type=int, default=1, help="number of attention output heads"
     )
     parser.add_argument("--num_hidden", type=int, default=256, help="number of hidden units")
-    parser.add_argument("--dropout", type=float, default=0.4, help="dropout probability")
     parser.add_argument("--lr", type=float, default=0.001, help="learning rate")
-    parser.add_argument("--mask_rate", type=float, default=0.5, help="masked node rates")
+    parser.add_argument("--mask_rate", type=float, default=0.5, help="mask rate")
+    parser.add_argument("--dropout", type=float, default=0.4, help="dropout probability")
     parser.add_argument("--encoder", type=str, default="HAN", help="heterogeneous encoder")
     parser.add_argument("--decoder", type=str, default="HAN", help="Heterogeneous decoder")
     parser.add_argument("--weight_decay", type=float, default=1e-4, help="weight decay")
+    parser.add_argument("--eva_lr", type=float, default=0.001, help="learning rate for evaluation")
+    parser.add_argument("--eva_wd", type=float, default=1e-4, help="weight decay for evaluation")
     parser.add_argument("--gamma", type=int, default=3, help="gamma for cosine similarity")
+    parser.add_argument("--devices", type=int, default=0, help="gpu devices")
     parser.add_argument("--scheduler", default=True, help="scheduler for optimizer")
+    parser.add_argument("--edge_recons", default=True, help="edge reconstruction")
+    parser.add_argument("--feat_recons", default=True, help="feature reconstruction")
+    parser.add_argument(
+        "--all_feat_recons", default=True, help="used all type node feature reconstruction"
+    )
+    parser.add_argument(
+        "--all_edge_recons", default=True, help="use all type node edge reconstruction"
+    )
     parser.add_argument("--use_config", default=True, help="use best parameter in config.yaml ")
-    args = parser.parse_args()
+    known_args, unknow_args = parser.parse_known_args()
 
-    if args.use_config:
-        args = load_config(args, "config.yaml")
-    print(args)
+    cmd_args = [arg.lstrip("-") for arg in sys.argv[1:] if arg.startswith("--")]
+    cmd_args_value = [getattr(known_args, arg) for arg in cmd_args if arg in known_args]
+    ## update argument by config file
+    if known_args.use_config:
+        known_args = load_config(known_args, "config.yaml")
+
+    ## update argument by command line
+    for arg, value in zip(cmd_args, cmd_args_value):
+        if value == "True" or value == "False":
+            value = eval(value)
+        setattr(known_args, arg, value)
     # device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
-
-    train(args=args)
+    print(known_args)
+    train(args=known_args)

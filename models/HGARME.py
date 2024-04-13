@@ -67,11 +67,16 @@ def module_selection(
 
 
 class HGARME(nn.Module):
-    def __init__(self, num_metapath, relations, all_types, target_in_dim, ntype_in_dim, args):
+    def __init__(
+        self, num_metapath, relations, target_type, all_types, target_in_dim, ntype_in_dim, args
+    ):
         super(HGARME, self).__init__()
         self.mask_rate = args.mask_rate
         self.target_in_dim = target_in_dim
         self.ntype_in_dim = ntype_in_dim
+        self.target_type = target_type
+        self.all_types = all_types
+
         self.hidden_dim = args.num_hidden
         self.num_layer = args.num_layer
         self.num_heads = args.num_heads
@@ -80,8 +85,10 @@ class HGARME(nn.Module):
         self.decoder_type = args.decoder
         self.dropout = args.dropout
         self.gamma = args.gamma
-        self.all_types = all_types
-
+        self.edge_recons = args.edge_recons
+        self.feat_recons = args.feat_recons
+        self.all_feat_recons = args.all_feat_recons
+        self.all_edge_recons = args.all_edge_recons
         # encoder/decoder hidden dimension
         if self.encoder_type == "HAN":
             self.enc_dim = self.hidden_dim // self.num_heads
@@ -137,27 +144,17 @@ class HGARME(nn.Module):
         self.edge_recons_encoder_to_decoder = nn.Linear(
             self.dec_in_dim, self.dec_in_dim, bias=False
         )
-        # ntype_dst_enc_dec={}
 
-        # for ntype in self.all_types:
-        #     ntype_dst_neighbors=nn.ModuleList([
-        #         nn.Linear(self.dec_in_dim, self.dec_in_dim, bias=False)
-        #         for _ in range(len(relations))
-        #     ])
-        #     ntype_dst_enc_dec[ntype]=ntype_dst_neighbors
-
-        # self.edge_recons_encoder_to_decoder = ntype_dst_enc_dec
-
-    def forward(self, subgs, relations, mp_subgraphs, edge_recons, feat_recons):
+    def forward(self, subgs, relations, mp_subgraphs):
         try:
             node_feature_recons_loss = 0
             adjmatrix_recons_loss = 0
             ## Calculate node feature reconstruction loss
-            if feat_recons:
+            if self.feat_recons:
                 node_feature_recons_loss = self.mask_attribute_reconstruction(
                     subgs[1], relations, mp_subgraphs
                 )
-            if edge_recons:
+            if self.edge_recons:
                 adjmatrix_recons_loss = self.mask_edge_reconstruction(subgs, relations)
 
             ## Calculate adjacent matrix reconstruction loss
@@ -180,9 +177,9 @@ class HGARME(nn.Module):
         src_based_subg = subgs[0]
         dst_based_subg = subgs[1]
         all_adjmatrix_recons_loss = 0.0
-        all_rel_pair_dec_rep = (
-            {}
-        )  ## this dict contain the dst src dec_rep pair to reconstruct the adjacent matrix
+        ## this dict contain the dst src dec_rep pair to reconstruct the adjacent matrix
+        all_rel_pair_dec_rep = {}
+
         dst_based_x = {
             "src_x": dst_based_subg.srcdata["feat"],
             "dst_x": dst_based_subg.dstdata["feat"],
@@ -194,6 +191,8 @@ class HGARME(nn.Module):
 
         for rel_tuple in relations:
             src_node, rel, dst_node = rel_tuple
+            if not self.all_edge_recons and dst_node != self.target_type:
+                continue
             reverse_rel = rel[::-1]
             reverse_tuple = (dst_node, reverse_rel, src_node)
             mask_src_rels_subgraphs = src_based_subg[reverse_rel].clone()
@@ -237,6 +236,8 @@ class HGARME(nn.Module):
         ## use_x represent target predicted node's features
         src_x = graph.srcdata["feat"]
         dst_x = graph.dstdata["feat"]
+        if not self.all_feat_recons:
+            dst_x = {self.target_type: dst_x[self.target_type]}
         use_dst_x, (ntypes_mask_nodes, ntypes_keep_nodes) = self.encode_mask_noise(graph, dst_x)
 
         all_node_feature_recons_loss = 0.0

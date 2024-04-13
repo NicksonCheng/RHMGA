@@ -46,9 +46,11 @@ heco_dblp:
 
 heco_freebase:
   dataset: "heco_freebase"
-  epoches: 1000
+  epoches: 500
+  batch_size: 256
+  eva_interval: 10
   eva_epoches: 50
-  num_layer: 2
+  num_layer: 3
   num_heads: 8
   num_out_heads: 1
   num_hidden: 512
@@ -62,11 +64,10 @@ heco_freebase:
   eva_wd: 0.0001
   gamma: 3
   devices: 0
-  num_layer: 3
-  num_heads: 8
-  num_out_heads: 1
   scheduler: True
   edge_recons: True
   feat_recons: True
+  all_feat_recons: True
+  all_edge_recons: True
 
 
