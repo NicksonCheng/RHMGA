@@ -1,5 +1,4 @@
 import torch
-import torch_geometric
 import torch.nn as nn
 from models.HAN import HAN
 from models.SRN import Schema_Relation_Network
@@ -8,7 +7,7 @@ from utils.evaluate import cosine_similarity, mse
 from functools import partial
 from dgl import DropEdge
 import traceback
-import dgl
+import datetime
 
 
 class MultiLayerPerception(nn.Module):
@@ -149,18 +148,17 @@ class HGARME(nn.Module):
 
         # self.edge_recons_encoder_to_decoder = ntype_dst_enc_dec
 
-    def forward(self, subgs, relations, mp_subgraphs):
+    def forward(self, subgs, relations, mp_subgraphs, edge_recons, feat_recons):
         try:
             node_feature_recons_loss = 0
             adjmatrix_recons_loss = 0
             ## Calculate node feature reconstruction loss
-            # node_feature_recons_loss = self.mask_attribute_reconstruction(
-            #     subgs[1], relations, mp_subgraphs
-            # )
-            # print("node_feature_recons_loss", node_feature_recons_loss)
-
-            adjmatrix_recons_loss = self.mask_edge_reconstruction(subgs, relations)
-            # print("adjmatrix_recons_loss", adjmatrix_recons_loss)
+            if feat_recons:
+                node_feature_recons_loss = self.mask_attribute_reconstruction(
+                    subgs[1], relations, mp_subgraphs
+                )
+            if edge_recons:
+                adjmatrix_recons_loss = self.mask_edge_reconstruction(subgs, relations)
 
             ## Calculate adjacent matrix reconstruction loss
             return node_feature_recons_loss + adjmatrix_recons_loss
@@ -168,7 +166,8 @@ class HGARME(nn.Module):
             # Check if the error message contains CUDA-related information
             if "CUDA" in str(e):
                 # Write the error message to a log file
-                with open("./log/gpu_error.log", "a") as f:
+                log_times = datetime.now().strftime("[%Y-%m-%d_%H:%M:%S]")
+                with open(f"./log/error/gpu_error_{log_times}.log", "a") as f:
                     f.write(f"GPU Runtime Error: {e}\n")
                     f.write(traceback.format_exc())
             else:

@@ -27,7 +27,7 @@ from tqdm import tqdm
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
 
-device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+# device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 # device_0 = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 # device_1 = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 heterogeneous_dataset = {
@@ -70,20 +70,24 @@ def load_config(args, path):
 
 
 def node_classification_evaluate(
-    enc_feat, args, num_classes, labels, train_mask, val_mask, test_mask, ratio
+    device, enc_feat, args, num_classes, labels, train_mask, val_mask, test_mask
 ):
     classifier = MLP(num_dim=args.num_hidden, num_classes=num_classes)
     classifier = classifier.to(device)
     optimizer = optim.Adam(classifier.parameters(), lr=args.eva_lr, weight_decay=args.eva_wd)
+    train_mask = train_mask.to(dtype=torch.bool)
+    val_mask = val_mask.to(dtype=torch.bool)
+    test_mask = test_mask.to(dtype=torch.bool)
     emb = {
-        "train": enc_feat[train_mask[ratio]],
-        "val": enc_feat[val_mask[ratio]],
-        "test": enc_feat[test_mask[ratio]],
+        "train": enc_feat[train_mask].to(device),
+        "val": enc_feat[val_mask].to(device),
+        "test": enc_feat[test_mask].to(device),
     }
+
     labels = {
-        "train": labels[train_mask[ratio]].cpu(),
-        "val": labels[val_mask[ratio]].cpu(),
-        "test": labels[test_mask[ratio]].cpu(),
+        "train": labels[train_mask].cpu(),
+        "val": labels[val_mask].cpu(),
+        "test": labels[test_mask].cpu(),
     }
 
     val_macro = []
@@ -122,22 +126,26 @@ def node_classification_evaluate(
 
 def train(args):
     start_t = time.time()
+
+    device_0 = torch.device(f"cuda:{args.devices}" if torch.cuda.is_available() else "cpu")
+    device_1 = torch.device(f"cuda:{args.devices ^ 1}" if torch.cuda.is_available() else "cpu")
+
     data = heterogeneous_dataset[args.dataset]["name"]()
     print("Preprocessing Time taken:", time.time() - start_t, "seconds")
     start_t = time.time()
     metapaths = data.metapaths
     relations = heterogeneous_dataset[args.dataset]["relations"]
-    graph = data[0].to(device)
+    graph = data[0].to(device_0)
     all_types = list(data._ntypes.values())
     mp_subgraphs = [
-        dgl.metapath_reachable_graph(graph, metapath).to(device) for metapath in metapaths
+        dgl.metapath_reachable_graph(graph, metapath).to(device_0) for metapath in metapaths
     ]  # homogeneous graph divide by metapaths
     features = {
-        t: graph.nodes[t].data["feat"].to(device)
+        t: graph.nodes[t].data["feat"].to(device_0)
         for t in all_types
         if "feat" in graph.nodes[t].data
     }
-    train_nids = {ntype: torch.arange(graph.num_nodes(ntype)).to(device) for ntype in all_types}
+    train_nids = {ntype: torch.arange(graph.num_nodes(ntype)).to(device_0) for ntype in all_types}
 
     target_type = data.predict_ntype
     num_classes = data.num_classes
@@ -166,9 +174,9 @@ def train(args):
         ntype_in_dim={ntype: feat.shape[1] for ntype, feat in features.items()},
         args=args,
     )
-    # if torch.cuda.is_available() and torch.cuda.device_count() > 1:
-    #     model = nn.DataParallel(model)
-    model = model.to(device)
+    if torch.cuda.is_available() and torch.cuda.device_count() > 1:
+        model = nn.DataParallel(model)
+    model = model.to(device_0)
     optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     if args.scheduler:
         # scheduler = torch.optim.lr_scheduler.ExponentialLR(
@@ -197,7 +205,7 @@ def train(args):
             # for subg in subgs:
             #     print(subg)
             # print("----------------------------------")
-            loss = model(subgs, relations, mp_subgraphs)
+            loss = model(subgs, relations, mp_subgraphs, args.edge_recons, args.feat_recons)
             train_loss += loss.item()
             optimizer.zero_grad()
 
@@ -208,9 +216,14 @@ def train(args):
         print(
             f"Epoch:{epoch+1}/{args.epoches} Training Loss:{train_loss/len(dataloader)} Learning_rate={scheduler.get_last_lr()}"
         )
-        if epoch > 0 and (epoch + 1) % 20 == 0:
+
+        ## Evaluate Embedding Performance
+        if True:
+
+            recons_type = "edge" if args.edge_recons else ""
+            recons_type += "_feat" if args.feat_recons else ""
             with open(
-                f"./log/only_adj_recons_{args.dataset}_{log_times}.txt",
+                f"./log/performance/HGARME({recons_type})_{args.dataset}_{log_times}.txt",
                 "a",
             ) as log_file:
                 result_acc = []
@@ -218,8 +231,8 @@ def train(args):
                 result_macro = []
                 log_file.write(f"Epoches:{epoch}-----------------------------------\n")
                 for ratio in label_ratio:
-                    # features[target_type] = features[target_type].to(device)
-                    # features = {ntype: feat.to(device) for ntype, feat in features.items()}
+                    # features[target_type] = features[target_type].to(device_0)
+                    # features = {ntype: feat.to(device_0) for ntype, feat in features.items()}
                     if args.encoder == "HAN":
                         enc_feat = model.encoder(mp_subgraphs, features[target_type])
                     elif args.encoder == "SRN":
@@ -235,14 +248,14 @@ def train(args):
                         )
 
                     max_acc, max_micro, max_macro = node_classification_evaluate(
+                        device_1,
                         enc_feat,
                         args,
                         num_classes,
                         target_type_labels,
-                        train_mask,
-                        val_mask,
-                        test_mask,
-                        ratio,
+                        train_mask[ratio],
+                        val_mask[ratio],
+                        test_mask[ratio],
                     )
                     performance[ratio]["Acc"].append(max_acc)
                     performance[ratio]["Macro-F1"].append(max_macro)
@@ -298,7 +311,6 @@ if __name__ == "__main__":
     if args.use_config:
         args = load_config(args, "config.yaml")
     print(args)
-    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
-    # device_0 = torch.device(f"cuda:{args.devices}" if torch.cuda.is_available() else "cpu")
-    # device_1 = torch.device(f"cuda:{args.devices ^ 1}" if torch.cuda.is_available() else "cpu")
+    # device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+
     train(args=args)
