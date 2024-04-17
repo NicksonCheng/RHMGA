@@ -3,7 +3,7 @@ import time
 import os
 import sys
 import argparse
-import yaml
+
 import dgl
 import numpy as np
 import torch
@@ -21,8 +21,9 @@ from utils.preprocess_HeCo import (
     AMinerHeCoDataset,
     FreebaseHeCoDataset,
 )
-from utils.evaluate import score, LogisticRegression, MLP
-from utils.utils import colorize, name_file
+from utils.preprocess_PubMed import PubMedDataset
+from utils.evaluate import score, LogisticRegression, MLP, node_classification_evaluate
+from utils.utils import load_config, colorize, name_file
 from models.HGARME import HGARME
 from models.HAN import HAN
 from tqdm import tqdm
@@ -45,14 +46,9 @@ heterogeneous_dataset = {
     # },
     "heco_freebase": {
         "name": FreebaseHeCoDataset,
-        "relations": [
-            ("author", "am", "movie"),
-            ("director", "dm", "movie"),
-            ("writer", "wm", "movie"),
-            ("movie", "ma", "author"),
-            ("movie", "md", "director"),
-            ("movie", "mw", "writer"),
-        ],
+    },
+    "PubMed": {
+        "name": PubMedDataset,
     },
     # "heco_aminer": {
     #     "name": AMinerHeCoDataset,
@@ -61,87 +57,22 @@ heterogeneous_dataset = {
 }
 
 
-def load_config(args, path):
-    with open(path, "r") as f:
-        config = yaml.load(f, yaml.FullLoader)
-    config = config[args.dataset]
-
-    for k, v in config.items():
-        setattr(args, k, v)
-    return args
-
-
-def node_classification_evaluate(
-    device, enc_feat, args, num_classes, labels, train_mask, val_mask, test_mask
-):
-    classifier = MLP(num_dim=args.num_hidden, num_classes=num_classes)
-    classifier = classifier.to(device)
-    optimizer = optim.Adam(classifier.parameters(), lr=args.eva_lr, weight_decay=args.eva_wd)
-    train_mask = train_mask.to(dtype=torch.bool)
-    val_mask = val_mask.to(dtype=torch.bool)
-    test_mask = test_mask.to(dtype=torch.bool)
-    emb = {
-        "train": enc_feat[train_mask].to(device),
-        "val": enc_feat[val_mask].to(device),
-        "test": enc_feat[test_mask].to(device),
-    }
-
-    labels = {
-        "train": labels[train_mask].cpu(),
-        "val": labels[val_mask].cpu(),
-        "test": labels[test_mask].cpu(),
-    }
-
-    val_macro = []
-    val_micro = []
-    val_accuracy = []
-    best_val_acc = 0.0
-    best_model_state_dict = None
-    for epoch in tqdm(range(args.eva_epoches), position=0, desc=colorize("Evaluating", "green")):
-        classifier.train()
-        train_output = classifier(emb["train"]).cpu()
-        eva_loss = F.cross_entropy(train_output, labels["train"])
-        optimizer.zero_grad()
-        eva_loss.backward(retain_graph=True)
-        optimizer.step()
-
-        with torch.no_grad():
-            classifier.eval()
-            val_output = classifier(emb["val"]).cpu()
-            val_acc, val_micro_f1, val_macro_f1 = score(val_output, labels["val"])
-
-            if val_acc > best_val_acc:
-                best_val_acc = val_acc
-                best_model_state_dict = classifier.state_dict()
-
-            val_accuracy.append(val_acc)
-            val_micro.append(val_micro_f1)
-            val_macro.append(val_macro_f1)
-
-    classifier.load_state_dict(best_model_state_dict)
-    test_output = classifier(emb["test"]).cpu()
-    test_acc, test_micro_f1, test_macro_f1 = score(test_output, labels["test"])
-
-    return test_acc, test_micro_f1, test_macro_f1
-    # return max(val_accuracy), max(val_micro), max(val_macro)
-
-
 def train(args):
     start_t = time.time()
-
+    # torch.cuda.set_device()
     device_0 = torch.device(f"cuda:{args.devices}" if torch.cuda.is_available() else "cpu")
-    device_1 = torch.device(f"cuda:{args.devices}" if torch.cuda.is_available() else "cpu")
+    device_1 = torch.device(f"cuda:{args.devices ^ 1 }" if torch.cuda.is_available() else "cpu")
 
     data = heterogeneous_dataset[args.dataset]["name"]()
     print("Preprocessing Time taken:", time.time() - start_t, "seconds")
     start_t = time.time()
-    metapaths = data.metapaths
-    relations = heterogeneous_dataset[args.dataset]["relations"]
+    relations = data.relations
     graph = data[0].to(device_0)
+
     all_types = list(data._ntypes.values())
-    mp_subgraphs = [
-        dgl.metapath_reachable_graph(graph, metapath).to(device_0) for metapath in metapaths
-    ]  # homogeneous graph divide by metapaths
+    target_type = data.predict_ntype
+    target_type_labels = graph.nodes[target_type].data["label"]
+    num_classes = data.num_classes
     features = {
         t: graph.nodes[t].data["feat"].to(device_0)
         for t in all_types
@@ -149,17 +80,7 @@ def train(args):
     }
     train_nids = {ntype: torch.arange(graph.num_nodes(ntype)).to(device_0) for ntype in all_types}
 
-    target_type = data.predict_ntype
-    num_classes = data.num_classes
-    target_type_labels = graph.nodes[target_type].data["label"]
-    label_ratio = ["20", "40", "60"]
-    train_mask = {
-        ratio: graph.nodes[target_type].data[f"train_mask_{ratio}"] for ratio in label_ratio
-    }
-    val_mask = {ratio: graph.nodes[target_type].data[f"val_mask_{ratio}"] for ratio in label_ratio}
-    test_mask = {
-        ratio: graph.nodes[target_type].data[f"test_mask_{ratio}"] for ratio in label_ratio
-    }
+    masked_graph = data.masked_graph
 
     # sampler = MultiLayerFullNeighborSampler(2)
     sampler = MultiLayerNeighborSampler([10, 5])
@@ -173,7 +94,6 @@ def train(args):
         use_uva=False,
     )
     model = HGARME(
-        num_metapath=len(metapaths),
         relations=relations,
         target_type=target_type,
         all_types=all_types,
@@ -199,14 +119,13 @@ def train(args):
         # else ( 1 + np.cos((epoch - warmup_steps) * np.pi / (max_epoch - warmup_steps))) * 0.5
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=scheduler)
 
-    performance = {
-        "20": {"Acc": [], "Macro-F1": [], "Micro-F1": []},
-        "40": {"Acc": [], "Macro-F1": [], "Micro-F1": []},
-        "60": {"Acc": [], "Macro-F1": [], "Micro-F1": []},
-    }
+    performance = {}
+    total_loss = []
     print("Modeling Time taken:", time.time() - start_t, "seconds")
     log_times = datetime.now().strftime("[%Y-%m-%d_%H:%M:%S]")
-    for epoch in tqdm(range(args.epoches), desc=colorize("Epoch Training", "blue")):
+    for epoch in tqdm(
+        range(args.epoches), total=args.epoches, desc=colorize("Epoch Training", "blue")
+    ):
         model.train()
         train_loss = 0.0
         for i, mini_batch in enumerate(dataloader):
@@ -215,7 +134,7 @@ def train(args):
             # for subg in subgs:
             #     print(subg)
             # print("----------------------------------")
-            loss = model(subgs, relations, mp_subgraphs)
+            loss = model(subgs, relations)
             train_loss += loss.item()
             optimizer.zero_grad()
 
@@ -223,71 +142,102 @@ def train(args):
             optimizer.step()
             scheduler.step()
             # print(f"Batch {i} Loss: {loss.item()}")
+        avg_train_loss = train_loss / len(dataloader)
         print(
-            f"Epoch:{epoch+1}/{args.epoches} Training Loss:{train_loss/len(dataloader)} Learning_rate={scheduler.get_last_lr()}"
+            f"Epoch:{epoch+1}/{args.epoches} Training Loss:{(avg_train_loss)} Learning_rate={scheduler.get_last_lr()}"
         )
-
+        total_loss.append(avg_train_loss)
         ## Evaluate Embedding Performance
         if epoch > 0 and ((epoch + 1) % args.eva_interval) == 0:
             # if True:
             file_name = name_file(args, "log", log_times)
             with open(file_name, "a") as log_file:
-                result_acc = []
-                result_micro = []
-                result_macro = []
+
                 log_file.write(f"Epoches:{epoch}-----------------------------------\n")
-                for ratio in label_ratio:
-                    if args.encoder == "HAN":
-                        enc_feat = model.encoder(mp_subgraphs, features[target_type])
-                    elif args.encoder == "SRN":
-                        rels_subgraphs = model.seperate_relation_graph(
-                            graph, relations, target_type
+
+                rels_subgraphs = model.seperate_relation_graph(graph, relations, target_type)
+                enc_feat = model.encoder(
+                    rels_subgraphs,
+                    target_type,
+                    features[target_type],
+                    features,
+                    "encoder",
+                )
+                if data.has_label_ratio:
+                    for ratio in data.label_ratio:
+                        max_acc, max_micro, max_macro = node_classification_evaluate(
+                            device_1,
+                            enc_feat,
+                            args,
+                            num_classes,
+                            target_type_labels,
+                            masked_graph[ratio],
                         )
-                        enc_feat = model.encoder(
-                            rels_subgraphs,
-                            target_type,
-                            features[target_type],
-                            features,
-                            "encoder",
+                        if ratio not in performance:
+                            performance[ratio] = {"Acc": [], "Micro-F1": [], "Macro-F1": []}
+
+                        performance[ratio]["Acc"].append(max_acc)
+                        performance[ratio]["Micro-F1"].append(max_micro)
+                        performance[ratio]["Macro-F1"].append(max_macro)
+                        log_file.write(
+                            "\t Label Rate:{}% [Accuracy:{:4f} Micro-F1:{:4f} Macro-F1:{:4f}  ]\n".format(
+                                ratio,
+                                max_acc,
+                                max_micro,
+                                max_macro,
+                            )
                         )
 
+                else:
                     max_acc, max_micro, max_macro = node_classification_evaluate(
                         device_1,
                         enc_feat,
                         args,
                         num_classes,
                         target_type_labels,
-                        train_mask[ratio],
-                        val_mask[ratio],
-                        test_mask[ratio],
+                        masked_graph,
                     )
-                    performance[ratio]["Acc"].append(max_acc)
-                    performance[ratio]["Macro-F1"].append(max_macro)
-                    performance[ratio]["Micro-F1"].append(max_micro)
-                    result_acc.append(max_acc)
-                    result_micro.append(max_micro)
-                    result_macro.append(max_macro)
+                    if not performance:
+                        performance = {"Acc": [], "Micro-F1": [], "Macro-F1": []}
+                    performance["Acc"].append(max_acc)
+                    performance["Micro-F1"].append(max_micro)
+                    performance["Macro-F1"].append(max_macro)
                     log_file.write(
-                        "\t Label Rate:{}% [Accuracy:{:4f} Macro-F1:{:4f} Micro-F1:{:4f} ]\n".format(
-                            ratio, max_acc, max_macro, max_micro
+                        "\t [Accuracy:{:4f} Micro-F1:{:4f} Macro-F1:{:4f}  ]\n".format(
+                            max_acc,
+                            max_micro,
+                            max_macro,
                         )
                     )
-
+    print(performance)
     ####
     ## plot the performance
     ####
-    fig, axs = plt.subplots(1, len(label_ratio), figsize=(15, 5))
-    x_range = list(range(0, args.epoches + 1, args.eva_interval))[1:]
-    for i, ratio in enumerate(label_ratio):
-        axs[i].set_title(f"Label Rate {ratio}%")
-        axs[i].plot(x_range, performance[ratio]["Acc"], label="Acc")
-        axs[i].plot(x_range, performance[ratio]["Macro-F1"], label="Macro-F1")
-        axs[i].plot(x_range, performance[ratio]["Micro-F1"], label="Micro-F1")
-        axs[i].legend()
-        axs[i].set_xlabel("epoch")
-    formatted_now = datetime.now().strftime("[%Y-%m-%d_%H:%M:%S]")
-    file_name = name_file(args, "img", formatted_now)
-    fig.savefig(file_name)
+    if data.has_label_ratio:
+        fig, axs = plt.subplots(1, len(data.label_ratio), figsize=(15, 5))
+        x_range = list(range(0, args.epoches + 1, args.eva_interval))[1:]
+        for i, ratio in enumerate(data.label_ratio):
+            axs[i].set_title(f"Performance [Label Rate {ratio}%]")
+            axs[i].plot(x_range, performance[ratio]["Acc"], label="Acc")
+            axs[i].plot(x_range, performance[ratio]["Macro-F1"], label="Macro-F1")
+            axs[i].plot(x_range, performance[ratio]["Micro-F1"], label="Micro-F1")
+            axs[i].legend()
+            axs[i].set_xlabel("epoch")
+        formatted_now = datetime.now().strftime("[%Y-%m-%d_%H:%M:%S]")
+        file_name = name_file(args, "img", formatted_now)
+        fig.savefig(file_name)
+    else:
+        fig, axs = plt.subplots(1, 1, figsize=(15, 5))
+        x_range = list(range(0, args.epoches + 1, args.eva_interval))[1:]
+        axs.set_title(f"Performance")
+        axs.plot(x_range, performance["Acc"], label="Acc")
+        axs.plot(x_range, performance["Macro-F1"], label="Macro-F1")
+        axs.plot(x_range, performance["Micro-F1"], label="Micro-F1")
+        axs.legend()
+        axs.set_xlabel("epoch")
+        formatted_now = datetime.now().strftime("[%Y-%m-%d_%H:%M:%S]")
+        file_name = name_file(args, "img", formatted_now)
+        fig.savefig(file_name)
 
 
 if __name__ == "__main__":
@@ -337,5 +287,7 @@ if __name__ == "__main__":
             value = eval(value)
         setattr(known_args, arg, value)
     # device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+    num_gpus = torch.cuda.device_count()
+
     print(known_args)
     train(args=known_args)

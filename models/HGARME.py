@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 from models.HAN import HAN
 from models.SRN import Schema_Relation_Network
-from models.HAN_SRN import Metapath_Relation_Network
 from utils.evaluate import cosine_similarity, mse
 from functools import partial
 from dgl import DropEdge
@@ -26,7 +25,6 @@ class MultiLayerPerception(nn.Module):
 
 
 def module_selection(
-    num_m,
     relations,
     in_dim,
     hidden_dim,
@@ -41,7 +39,6 @@ def module_selection(
 ):
     if module_type == "HAN":
         return HAN(
-            num_metapaths=num_m,
             in_dim=in_dim,
             hidden_dim=hidden_dim,
             out_dim=out_dim,
@@ -67,9 +64,7 @@ def module_selection(
 
 
 class HGARME(nn.Module):
-    def __init__(
-        self, num_metapath, relations, target_type, all_types, target_in_dim, ntype_in_dim, args
-    ):
+    def __init__(self, relations, target_type, all_types, target_in_dim, ntype_in_dim, args):
         super(HGARME, self).__init__()
         self.mask_rate = args.mask_rate
         self.target_in_dim = target_in_dim
@@ -108,7 +103,6 @@ class HGARME(nn.Module):
             {t: nn.Linear(self.ntype_in_dim[t], self.hidden_dim) for t in self.all_types}
         )
         self.encoder = module_selection(
-            num_m=num_metapath,
             relations=relations,
             in_dim=self.target_in_dim,
             hidden_dim=self.enc_dim,
@@ -124,7 +118,6 @@ class HGARME(nn.Module):
         # linear transformation from encoder to decoder
         self.initial_enc_dec_dim(relations=relations)
         self.decoder = module_selection(
-            num_m=num_metapath,
             relations=relations,
             in_dim=self.dec_in_dim,
             hidden_dim=self.dec_hidden_dim,
@@ -145,14 +138,14 @@ class HGARME(nn.Module):
             self.dec_in_dim, self.dec_in_dim, bias=False
         )
 
-    def forward(self, subgs, relations, mp_subgraphs):
+    def forward(self, subgs, relations):
         try:
             node_feature_recons_loss = 0
             adjmatrix_recons_loss = 0
             ## Calculate node feature reconstruction loss
             if self.feat_recons:
                 node_feature_recons_loss = self.mask_attribute_reconstruction(
-                    subgs[1], relations, mp_subgraphs
+                    subgs[1], relations
                 )
             if self.edge_recons:
                 adjmatrix_recons_loss = self.mask_edge_reconstruction(subgs, relations)
@@ -172,7 +165,7 @@ class HGARME(nn.Module):
                 print("RuntimeError:", e)
 
     def mask_edge_reconstruction(self, subgs, relations):
-        ### src node should be encode to reconstruct adjacent matrix, reverse relation should do same thing again
+        ### src node should be encode to reconstruct adjacent matrix, rev relation should do same thing again
         ### we use dst-based graph's dst_node and src-based graph's dst_node to reconstruct adjacent matrix
         src_based_subg = subgs[0]
         dst_based_subg = subgs[1]
@@ -193,9 +186,9 @@ class HGARME(nn.Module):
             src_node, rel, dst_node = rel_tuple
             if not self.all_edge_recons and dst_node != self.target_type:
                 continue
-            reverse_rel = rel[::-1]
-            reverse_tuple = (dst_node, reverse_rel, src_node)
-            mask_src_rels_subgraphs = src_based_subg[reverse_rel].clone()
+            rev_rel = rel[::-1]
+            rev_tuple = (dst_node, rev_rel, src_node)
+            mask_src_rels_subgraphs = src_based_subg[rev_rel].clone()
             mask_dst_rels_subgraphs = dst_based_subg[rel].clone()
 
             drop_edge = DropEdge(p=self.mask_rate)
@@ -210,7 +203,7 @@ class HGARME(nn.Module):
                 "adj_recons",
             )
             src_enc_rep = self.encoder(
-                {reverse_tuple: mask_src_rels_subgraphs},
+                {rev_tuple: mask_src_rels_subgraphs},
                 src_node,
                 src_based_x["dst_x"][src_node],
                 {dst_node: src_based_x["src_x"][dst_node]},
@@ -220,7 +213,7 @@ class HGARME(nn.Module):
 
             # src_ntype_rep=[self.edge_recons_encoder_to_decoder[ntype][idx](enc_rep) for idx,enc_rep in enumerate(src_ntype_enc_rep)]
             dst_rep = self.edge_recons_encoder_to_decoder(dst_enc_rep[rel])
-            src_rep = self.edge_recons_encoder_to_decoder(src_enc_rep[reverse_rel])
+            src_rep = self.edge_recons_encoder_to_decoder(src_enc_rep[rev_rel])
 
             origin_adj_matrix = dst_based_subg[rel].adj()
             origin_adj_tensor = origin_adj_matrix.to_dense()
@@ -230,7 +223,7 @@ class HGARME(nn.Module):
             all_adjmatrix_recons_loss += rel_pair_loss
         return all_adjmatrix_recons_loss
 
-    def mask_attribute_reconstruction(self, graph, relations, mp_subgraphs):
+    def mask_attribute_reconstruction(self, graph, relations):
         ### only used dst node to do attribute reconstruction
         ## x represent all node features
         ## use_x represent target predicted node's features
@@ -244,9 +237,7 @@ class HGARME(nn.Module):
         for use_ntype, use_x in use_dst_x.items():
             rels_subgraphs = self.seperate_relation_graph(graph, relations, use_ntype)
             mask_nodes = ntypes_mask_nodes[use_ntype]
-            if self.encoder_type == "HAN":
-                enc_rep = self.encoder(mp_subgraphs, use_x)
-            elif self.encoder_type == "SRN":
+            if self.encoder_type == "SRN":
                 enc_rep = self.encoder(
                     rels_subgraphs, use_ntype, use_x, src_x, "encoder", "nf_recons"
                 )
@@ -254,9 +245,7 @@ class HGARME(nn.Module):
             # remask
             hidden_rep[mask_nodes] = 0.0
             # decoder module
-            if self.decoder_type == "HAN":
-                dec_rep = self.decoder(mp_subgraphs, hidden_rep)
-            elif self.decoder_type == "SRN":
+            if self.decoder_type == "SRN":
                 dec_rep = self.decoder(rels_subgraphs, use_ntype, hidden_rep, src_x, "decoder")
             elif self.decoder_type == "MLP":
                 dec_rep = self.decoder(hidden_rep)

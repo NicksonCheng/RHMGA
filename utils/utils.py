@@ -1,3 +1,16 @@
+import yaml
+
+
+def load_config(args, path):
+    with open(path, "r") as f:
+        config = yaml.load(f, yaml.FullLoader)
+    config = config[args.dataset]
+
+    for k, v in config.items():
+        setattr(args, k, v)
+    return args
+
+
 def colorize(string, color):
     colors = {
         "red": "\033[91m",
@@ -14,10 +27,9 @@ def colorize(string, color):
 
 def name_file(args, file, log_times):
     if file == "log":
-        file_name = f"./{file}/performance/HGARME("
+        file_name = f"./{file}/performance/{log_times}_HGARME("
     else:
-        file_name = f"./{file}/HGARME("
-    print(args)
+        file_name = f"./{file}/{log_times}_HGARME("
     if args.edge_recons:
         file_name += "edge"
         if args.all_edge_recons:
@@ -28,10 +40,9 @@ def name_file(args, file, log_times):
         if args.all_feat_recons:
             file_name += "[all]"
 
-    file_name += f")_{args.dataset}_{log_times}"
+    file_name += f")_{args.dataset}"
     if file == "log":
         file_name += ".txt"
     else:
         file_name += ".png"
-    print(file_name)
     return file_name

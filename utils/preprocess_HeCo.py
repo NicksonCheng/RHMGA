@@ -42,6 +42,15 @@ class HeCoDataset(DGLDataset):
     def __init__(self, name, ntypes):
         url = "https://api.github.com/repos/liun-online/HeCo/zipball/main"
         self._ntypes = {ntype[0]: ntype for ntype in ntypes}
+        self._relations = [
+            ("author", "am", "movie"),
+            ("director", "dm", "movie"),
+            ("writer", "wm", "movie"),
+            ("movie", "ma", "author"),
+            ("movie", "md", "director"),
+            ("movie", "mw", "writer"),
+        ]
+        self._label_ratio = ["20", "40", "60"]
         super().__init__(name + "-heco", url)
 
     def download(self):
@@ -78,8 +87,8 @@ class HeCoDataset(DGLDataset):
         self.pos_i, self.pos_j = info["pos_i"], info["pos_j"]
 
     def process(self):
-        if self.has_cache():
-            return
+        # if self.has_cache():
+        #     return
         self.g = dgl.heterograph(self._read_edges())
 
         feats = self._read_feats()
@@ -90,11 +99,16 @@ class HeCoDataset(DGLDataset):
         self._num_classes = labels.max().item() + 1
         self.g.nodes[self.predict_ntype].data["label"] = labels
         n = self.g.num_nodes(self.predict_ntype)
-        for split in ("train", "val", "test"):
-            for rate in [20, 40, 60]:
-                idx = np.load(os.path.join(self.raw_path, f"{split}_{rate}.npy"))
+
+        self.masked_graph = {}
+        for ratio in self.label_ratio:
+            if ratio not in self.masked_graph:
+                self.masked_graph[ratio] = {}
+            for split in ("train", "val", "test"):
+                idx = np.load(os.path.join(self.raw_path, f"{split}_{ratio}.npy"))
                 mask = generate_mask_tensor(idx2mask(idx, n))
-                self.g.nodes[self.predict_ntype].data[f"{split}_mask_{rate}"] = mask
+
+                self.masked_graph[ratio][split] = mask
         pos_i, pos_j = sp.load_npz(os.path.join(self.raw_path, "pos.npz")).nonzero()
         self.pos_i, self.pos_j = (
             torch.from_numpy(pos_i).long(),
@@ -147,8 +161,20 @@ class HeCoDataset(DGLDataset):
         raise NotImplementedError
 
     @property
+    def evalution_graph(self):
+        return self.masked_graph
+
+    @property
     def pos(self):
         return self.pos_i, self.pos_j
+
+    @property
+    def has_label_ratio(self):
+        return True
+
+    @property
+    def label_ratio(self):
+        return self._label_ratio
 
 
 class ACMHeCoDataset(HeCoDataset):
@@ -263,6 +289,10 @@ class FreebaseHeCoDataset(HeCoDataset):
     @property
     def metapaths(self):
         return [["ma", "am"], ["md", "dm"], ["mw", "wm"]]
+
+    @property
+    def relations(self):
+        return self._relations
 
     @property
     def predict_ntype(self):
