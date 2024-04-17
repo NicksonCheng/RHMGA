@@ -96,9 +96,7 @@ class Schema_Relation_Network(nn.Module):
                 #     attn_drop=dropout,
                 #     activation=F.elu,
                 # )
-                rel_tuple[1]: HeCoGATConv(
-                    hidden_dim=self.hidden_dim, attn_drop=0.3, activation=F.elu
-                )
+                rel_tuple[1]: HeCoGATConv(hidden_dim=self.hidden_dim, attn_drop=0.3, activation=F.elu)
                 for rel_tuple in relations
             }
         )
@@ -107,9 +105,7 @@ class Schema_Relation_Network(nn.Module):
 
         ## out_dim has different type of nodes
         if enc_dec == "decoder":
-            self.ntypes_decoder_trans = nn.ModuleDict(
-                {ntype: nn.Linear(hidden_dim, out_dim) for ntype, out_dim in ntype_out_dim.items()}
-            )
+            self.ntypes_decoder_trans = nn.ModuleDict({ntype: nn.Linear(hidden_dim, out_dim) for ntype, out_dim in ntype_out_dim.items()})
 
     def forward(
         self,
@@ -123,11 +119,7 @@ class Schema_Relation_Network(nn.Module):
         ## Linear Transformation to same dimension
         if enc_dec == "encoder":
             dst_feat = self.weight_T[dst_ntype](dst_feat)
-        neighbors_feat = {
-            ntype: self.weight_T[ntype](feat)
-            for ntype, feat in src_feat.items()
-            if ntype != dst_ntype
-        }
+        neighbors_feat = {ntype: self.weight_T[ntype](feat) for ntype, feat in src_feat.items()}
         ## aggregate the neighbor based on the relation
         z_r = {}
         for rels_tuple, rel_graph in rels_subgraphs.items():

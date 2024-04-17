@@ -99,9 +99,7 @@ class HGARME(nn.Module):
         self.dec_heads = self.num_out_heads
 
         ## project all type of node into same dimension
-        self.weight_T = nn.ModuleDict(
-            {t: nn.Linear(self.ntype_in_dim[t], self.hidden_dim) for t in self.all_types}
-        )
+        self.weight_T = nn.ModuleDict({t: nn.Linear(self.ntype_in_dim[t], self.hidden_dim) for t in self.all_types})
         self.encoder = module_selection(
             relations=relations,
             in_dim=self.target_in_dim,
@@ -134,9 +132,7 @@ class HGARME(nn.Module):
 
     def initial_enc_dec_dim(self, relations):
         self.encoder_to_decoder = nn.Linear(self.dec_in_dim, self.dec_in_dim, bias=False)
-        self.edge_recons_encoder_to_decoder = nn.Linear(
-            self.dec_in_dim, self.dec_in_dim, bias=False
-        )
+        self.edge_recons_encoder_to_decoder = nn.Linear(self.dec_in_dim, self.dec_in_dim, bias=False)
 
     def forward(self, subgs, relations):
         try:
@@ -144,9 +140,7 @@ class HGARME(nn.Module):
             adjmatrix_recons_loss = 0
             ## Calculate node feature reconstruction loss
             if self.feat_recons:
-                node_feature_recons_loss = self.mask_attribute_reconstruction(
-                    subgs[1], relations
-                )
+                node_feature_recons_loss = self.mask_attribute_reconstruction(subgs[1], relations)
             if self.edge_recons:
                 adjmatrix_recons_loss = self.mask_edge_reconstruction(subgs, relations)
 
@@ -232,15 +226,13 @@ class HGARME(nn.Module):
         if not self.all_feat_recons:
             dst_x = {self.target_type: dst_x[self.target_type]}
         use_dst_x, (ntypes_mask_nodes, ntypes_keep_nodes) = self.encode_mask_noise(graph, dst_x)
-
         all_node_feature_recons_loss = 0.0
+
         for use_ntype, use_x in use_dst_x.items():
             rels_subgraphs = self.seperate_relation_graph(graph, relations, use_ntype)
             mask_nodes = ntypes_mask_nodes[use_ntype]
             if self.encoder_type == "SRN":
-                enc_rep = self.encoder(
-                    rels_subgraphs, use_ntype, use_x, src_x, "encoder", "nf_recons"
-                )
+                enc_rep = self.encoder(rels_subgraphs, use_ntype, use_x, src_x, "encoder", "nf_recons")
             hidden_rep = self.encoder_to_decoder(enc_rep)
             # remask
             hidden_rep[mask_nodes] = 0.0

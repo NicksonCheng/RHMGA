@@ -73,14 +73,14 @@ def train(args):
     target_type = data.predict_ntype
     target_type_labels = graph.nodes[target_type].data["label"]
     num_classes = data.num_classes
-    features = {
-        t: graph.nodes[t].data["feat"].to(device_0)
-        for t in all_types
-        if "feat" in graph.nodes[t].data
-    }
+    features = {t: graph.nodes[t].data["feat"].to(device_0) for t in all_types if "feat" in graph.nodes[t].data}
     train_nids = {ntype: torch.arange(graph.num_nodes(ntype)).to(device_0) for ntype in all_types}
 
-    masked_graph = data.masked_graph
+    masked_graph = {
+        "trian": graph.nodes[target_type].data["train"],
+        "val": graph.nodes[target_type].data["val"],
+        "test": graph.nodes[target_type].data["test"],
+    }
 
     # sampler = MultiLayerFullNeighborSampler(2)
     sampler = MultiLayerNeighborSampler([10, 5])
@@ -123,9 +123,7 @@ def train(args):
     total_loss = []
     print("Modeling Time taken:", time.time() - start_t, "seconds")
     log_times = datetime.now().strftime("[%Y-%m-%d_%H:%M:%S]")
-    for epoch in tqdm(
-        range(args.epoches), total=args.epoches, desc=colorize("Epoch Training", "blue")
-    ):
+    for epoch in tqdm(range(args.epoches), total=args.epoches, desc=colorize("Epoch Training", "blue")):
         model.train()
         train_loss = 0.0
         for i, mini_batch in enumerate(dataloader):
@@ -143,9 +141,7 @@ def train(args):
             scheduler.step()
             # print(f"Batch {i} Loss: {loss.item()}")
         avg_train_loss = train_loss / len(dataloader)
-        print(
-            f"Epoch:{epoch+1}/{args.epoches} Training Loss:{(avg_train_loss)} Learning_rate={scheduler.get_last_lr()}"
-        )
+        print(f"Epoch:{epoch+1}/{args.epoches} Training Loss:{(avg_train_loss)} Learning_rate={scheduler.get_last_lr()}")
         total_loss.append(avg_train_loss)
         ## Evaluate Embedding Performance
         if epoch > 0 and ((epoch + 1) % args.eva_interval) == 0:
@@ -249,9 +245,7 @@ if __name__ == "__main__":
     parser.add_argument("--eva_epoches", type=int, default=50)
     parser.add_argument("--num_layer", type=int, default=3, help="number of model layer")
     parser.add_argument("--num_heads", type=int, default=8, help="number of attention heads")
-    parser.add_argument(
-        "--num_out_heads", type=int, default=1, help="number of attention output heads"
-    )
+    parser.add_argument("--num_out_heads", type=int, default=1, help="number of attention output heads")
     parser.add_argument("--num_hidden", type=int, default=256, help="number of hidden units")
     parser.add_argument("--lr", type=float, default=0.001, help="learning rate")
     parser.add_argument("--mask_rate", type=float, default=0.5, help="mask rate")
@@ -266,12 +260,8 @@ if __name__ == "__main__":
     parser.add_argument("--scheduler", default=True, help="scheduler for optimizer")
     parser.add_argument("--edge_recons", default=True, help="edge reconstruction")
     parser.add_argument("--feat_recons", default=True, help="feature reconstruction")
-    parser.add_argument(
-        "--all_feat_recons", default=True, help="used all type node feature reconstruction"
-    )
-    parser.add_argument(
-        "--all_edge_recons", default=True, help="use all type node edge reconstruction"
-    )
+    parser.add_argument("--all_feat_recons", default=True, help="used all type node feature reconstruction")
+    parser.add_argument("--all_edge_recons", default=True, help="use all type node edge reconstruction")
     parser.add_argument("--use_config", default=True, help="use best parameter in config.yaml ")
     known_args, unknow_args = parser.parse_known_args()
 
