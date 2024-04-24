@@ -76,11 +76,15 @@ def train(args):
     features = {t: graph.nodes[t].data["feat"].to(device_0) for t in all_types if "feat" in graph.nodes[t].data}
     train_nids = {ntype: torch.arange(graph.num_nodes(ntype)).to(device_0) for ntype in all_types}
 
-    masked_graph = {
-        "trian": graph.nodes[target_type].data["train"],
-        "val": graph.nodes[target_type].data["val"],
-        "test": graph.nodes[target_type].data["test"],
-    }
+    masked_graph = {}
+    if data.has_label_ratio:
+        for ratio in data.label_ratio:
+            masked_graph[ratio] = {}
+            for split in ["train", "val", "test"]:
+                masked_graph[ratio][split] = graph.nodes[target_type].data[f"{split}_{ratio}"]
+    else:
+        for split in ["train", "val", "test"]:
+            masked_graph[split] = graph.nodes[target_type].data[split]
 
     # sampler = MultiLayerFullNeighborSampler(2)
     sampler = MultiLayerNeighborSampler([10, 5])
@@ -128,10 +132,12 @@ def train(args):
         train_loss = 0.0
         for i, mini_batch in enumerate(dataloader):
             src_nodes, dst_nodes, subgs = mini_batch
+
             # print("----------------------------------")
-            # for subg in subgs:
-            #     print(subg)
+            # for rels_tuple in relations:
+            #     print(f"{rels_tuple}: {subgs[1].num_edges(rels_tuple)}")
             # print("----------------------------------")
+
             loss = model(subgs, relations)
             train_loss += loss.item()
             optimizer.zero_grad()
@@ -140,6 +146,7 @@ def train(args):
             optimizer.step()
             scheduler.step()
             # print(f"Batch {i} Loss: {loss.item()}")
+            break
         avg_train_loss = train_loss / len(dataloader)
         print(f"Epoch:{epoch+1}/{args.epoches} Training Loss:{(avg_train_loss)} Learning_rate={scheduler.get_last_lr()}")
         total_loss.append(avg_train_loss)
@@ -210,7 +217,7 @@ def train(args):
     ## plot the performance
     ####
     if data.has_label_ratio:
-        fig, axs = plt.subplots(1, len(data.label_ratio), figsize=(15, 5))
+        fig, axs = plt.subplots(1, len(data.label_ratio) + 1, figsize=(15, 5))
         x_range = list(range(0, args.epoches + 1, args.eva_interval))[1:]
         for i, ratio in enumerate(data.label_ratio):
             axs[i].set_title(f"Performance [Label Rate {ratio}%]")
@@ -219,21 +226,23 @@ def train(args):
             axs[i].plot(x_range, performance[ratio]["Micro-F1"], label="Micro-F1")
             axs[i].legend()
             axs[i].set_xlabel("epoch")
-        formatted_now = datetime.now().strftime("[%Y-%m-%d_%H:%M:%S]")
-        file_name = name_file(args, "img", formatted_now)
-        fig.savefig(file_name)
     else:
-        fig, axs = plt.subplots(1, 1, figsize=(15, 5))
+        fig, axs = plt.subplots(1, 2, figsize=(15, 5))
         x_range = list(range(0, args.epoches + 1, args.eva_interval))[1:]
-        axs.set_title(f"Performance")
-        axs.plot(x_range, performance["Acc"], label="Acc")
-        axs.plot(x_range, performance["Macro-F1"], label="Macro-F1")
-        axs.plot(x_range, performance["Micro-F1"], label="Micro-F1")
-        axs.legend()
-        axs.set_xlabel("epoch")
-        formatted_now = datetime.now().strftime("[%Y-%m-%d_%H:%M:%S]")
-        file_name = name_file(args, "img", formatted_now)
-        fig.savefig(file_name)
+        axs[0].set_title(f"Performance")
+        axs[0].plot(x_range, performance["Acc"], label="Acc")
+        axs[0].plot(x_range, performance["Macro-F1"], label="Macro-F1")
+        axs[0].plot(x_range, performance["Micro-F1"], label="Micro-F1")
+        axs[0].legend()
+        axs[0].set_xlabel("epoch")
+
+    x_range = list(range(args.epoches))
+    axs[-1].plot(x_range, total_loss, label="Loss")
+    axs[-1].legend()
+    axs[-1].set_xlabel("epoch")
+    formatted_now = datetime.now().strftime("[%Y-%m-%d_%H:%M:%S]")
+    file_name = name_file(args, "img", formatted_now)
+    fig.savefig(file_name)
 
 
 if __name__ == "__main__":

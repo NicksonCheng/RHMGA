@@ -6,6 +6,8 @@ from dgl.data import DGLDataset
 from torch_geometric.data import HeteroData
 from tqdm import tqdm
 from dgl.data.utils import save_graphs, load_graphs, generate_mask_tensor, idx2mask
+from collections import Counter
+from sklearn.model_selection import train_test_split
 
 
 class PubMedDataset(DGLDataset):
@@ -37,6 +39,7 @@ class PubMedDataset(DGLDataset):
         curr_dir = os.path.dirname(__file__)
         parent_dir = os.path.dirname(curr_dir)
         self.data_path = os.path.join(parent_dir, "data/CKD_data/PubMed")
+        self.add_reverse_relation()
         super(PubMedDataset, self).__init__(
             name="pubmed",
             url=url,
@@ -45,6 +48,13 @@ class PubMedDataset(DGLDataset):
             force_reload=force_reload,
             verbose=verbose,
         )
+
+    def add_reverse_relation(self):
+        for rel_tuple in self._relations:
+            src, rel, dst = rel_tuple
+            rev_rel = (dst, f"{dst}-{src}", src)
+            if rev_rel not in self._relations:
+                self._relations.append(rev_rel)
 
     def download(self):
         pass
@@ -105,21 +115,19 @@ class PubMedDataset(DGLDataset):
         dst = edges_file["v_id"].tolist()
         etype = edges_file["link_type"].tolist()
         for s, d, t in tqdm(zip(src, dst, etype), total=len(src)):
-            rel = self._relations[t]
-            src_t = rel[0]
-            dst_t = rel[2]
+            rel_tuple = self._relations[int(t)]
+            src_t, rel, dst_t = rel_tuple
             s = node_dict[src_t]["id"].index(s)
             d = node_dict[dst_t]["id"].index(d)
-            if rel not in edges:
-                edges[rel] = ([s], [d])
+            if rel_tuple not in edges:
+                edges[rel_tuple] = ([s], [d])
             else:
-                edges[rel][0].append(s)
-                edges[rel][1].append(d)
+                edges[rel_tuple][0].append(s)
+                edges[rel_tuple][1].append(d)
             if s != t:
                 ## self-defined rev relation
-                rev_rel = (rel[2], f"{rel[2]}-{rel[0]}", rel[0])
-                if rev_rel not in self._relations:
-                    self._relations.append(rev_rel)
+                rev_rel = (dst_t, f"{dst_t}-{src_t}", src_t)
+
                 if rev_rel not in edges:
                     edges[rev_rel] = ([d], [s])
                 else:
@@ -156,15 +164,25 @@ class PubMedDataset(DGLDataset):
             node_label = row["node_label"]
             self.graph.nodes[self.predict_ntype].data["label"][mapped_node_id] = torch.tensor([node_label])
             label_nodes_indices.append(mapped_node_id)
+
         ## split label node into train valid test
 
-        num_train_nodes = int(len(label_nodes_indices) * split_ratio["train"])
-        num_valid_nodes = int(len(label_nodes_indices) * split_ratio["val"])
+        ## self-define split ratio
+        # num_train_nodes = int(len(label_nodes_indices) * split_ratio["train"])
+        # num_valid_nodes = int(len(label_nodes_indices) * split_ratio["val"])
+        # eva_indices = {
+        #     "train": label_nodes_indices[:num_train_nodes],
+        #     "val": label_nodes_indices[num_train_nodes : num_train_nodes + num_valid_nodes],
+        #     "test": label_nodes_indices[num_train_nodes + num_valid_nodes :],
+        # }
 
+        ## sklearn split data
+        train_indices, test_indices = train_test_split(label_nodes_indices, test_size=split_ratio["test"], random_state=42)
+        train_indices, val_indices = train_test_split(train_indices, test_size=split_ratio["val"], random_state=42)
         eva_indices = {
-            "train": label_nodes_indices[:num_train_nodes],
-            "val": label_nodes_indices[num_train_nodes : num_train_nodes + num_valid_nodes],
-            "test": label_nodes_indices[num_train_nodes + num_valid_nodes :],
+            "train": train_indices,
+            "val": val_indices,
+            "test": test_indices,
         }
         for name, indices in eva_indices.items():
             mask = generate_mask_tensor(idx2mask(indices, pred_num_nodes))

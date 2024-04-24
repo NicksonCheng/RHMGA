@@ -1,20 +1,32 @@
-from tqdm import tqdm
-import time
+def heapify(arr, n, i):
+    largest = i
+    l = 2 * i + 1
+    r = 2 * i + 2
 
-# Set total number of iterations
-total_iterations = 100
+    if l < n and arr[l] > arr[largest]:
+        largest = l
 
-# Initialize tqdm with the total number of iterations
-progress_bar = tqdm(total=total_iterations, unit="iteration")
+    if r < n and arr[r] > arr[largest]:
+        largest = r
 
-# Iterate over each iteration
-for i in range(total_iterations):
-    # Perform some task (simulation)
-    time.sleep(0.1)
-    # Update progress bar
-    progress_bar.update(1)
-    # Print something at the end of each iteration
-    progress_bar.set_postfix({"Message": "Task completed!"}, refresh=)
+    if largest != i:
+        arr[i], arr[largest] = arr[largest], arr[i]
+        heapify(arr, n, largest)
 
-# Close progress bar
-progress_bar.close()
+
+def heapSort(arr):
+    n = len(arr)
+
+    for i in range(n // 2 - 1, -1, -1):
+        heapify(arr, n, i)
+
+    for i in range(n - 1, 0, -1):
+        arr[i], arr[0] = arr[0], arr[i]
+        heapify(arr, i, 0)
+
+
+# Example usage:
+arr = [12, 11, 13, 5, 6, 7]
+heapSort(arr)
+print("Sorted array is:", arr)
+# Output: Sorted array is: [5, 6, 7, 11, 12, 13]

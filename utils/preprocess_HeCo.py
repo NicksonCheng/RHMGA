@@ -43,12 +43,12 @@ class HeCoDataset(DGLDataset):
         url = "https://api.github.com/repos/liun-online/HeCo/zipball/main"
         self._ntypes = {ntype[0]: ntype for ntype in ntypes}
         self._relations = [
-            ("author", "am", "movie"),
-            ("director", "dm", "movie"),
-            ("writer", "wm", "movie"),
-            ("movie", "ma", "author"),
-            ("movie", "md", "director"),
-            ("movie", "mw", "writer"),
+            ("author", "author-movie", "movie"),
+            ("director", "director-movie", "movie"),
+            ("writer", "writer-movie", "movie"),
+            ("movie", "movie-author", "author"),
+            ("movie", "movie-director", "director"),
+            ("movie", "movie-writer", "writer"),
         ]
         self._label_ratio = ["20", "40", "60"]
         super().__init__(name + "-heco", url)
@@ -67,8 +67,8 @@ class HeCoDataset(DGLDataset):
         )
 
     def save(self):
-        if self.has_cache():
-            return
+        # if self.has_cache():
+        #     return
         save_graphs(os.path.join(self.save_path, self.name + "_dgl_graph.bin"), [self.g])
         save_info(
             os.path.join(self.raw_path, self.name + "_pos.pkl"),
@@ -81,14 +81,18 @@ class HeCoDataset(DGLDataset):
         self.g = graphs[0]
         ntype = self.predict_ntype
         self._num_classes = self.g.nodes[ntype].data["label"].max().item() + 1
-        for k in ("train_mask", "val_mask", "test_mask"):
-            self.g.nodes[ntype].data[k] = self.g.nodes[ntype].data[k].bool()
+        for split in ("train", "val", "test"):
+            for ratio in self.label_ratio:
+                k = f"{split}_{ratio}"
+                self.g.nodes[ntype].data[k] = self.g.nodes[ntype].data[k].bool()
+
         info = load_info(os.path.join(self.raw_path, self.name + "_pos.pkl"))
         self.pos_i, self.pos_j = info["pos_i"], info["pos_j"]
 
     def process(self):
         # if self.has_cache():
         #     return
+        print("process")
         self.g = dgl.heterograph(self._read_edges())
 
         feats = self._read_feats()
@@ -101,14 +105,14 @@ class HeCoDataset(DGLDataset):
         n = self.g.num_nodes(self.predict_ntype)
 
         self.masked_graph = {}
-        for ratio in self.label_ratio:
-            if ratio not in self.masked_graph:
-                self.masked_graph[ratio] = {}
-            for split in ("train", "val", "test"):
+        for split in ("train", "val", "test"):
+            if split not in self.masked_graph:
+                self.masked_graph[split] = {}
+            for ratio in self.label_ratio:
                 idx = np.load(os.path.join(self.raw_path, f"{split}_{ratio}.npy"))
                 mask = generate_mask_tensor(idx2mask(idx, n))
 
-                self.masked_graph[ratio][split] = mask
+                self.g.nodes[self.predict_ntype].data[f"{split}_{ratio}"] = mask
         pos_i, pos_j = sp.load_npz(os.path.join(self.raw_path, "pos.npz")).nonzero()
         self.pos_i, self.pos_j = (
             torch.from_numpy(pos_i).long(),
@@ -125,8 +129,9 @@ class HeCoDataset(DGLDataset):
                 e = pd.read_csv(os.path.join(self.raw_path, f"{u}{v}.txt"), sep="\t", names=[u, v])
                 src = e[u].to_list()
                 dst = e[v].to_list()
-                edges[(self._ntypes[u], f"{u}{v}", self._ntypes[v])] = (src, dst)
-                edges[(self._ntypes[v], f"{v}{u}", self._ntypes[u])] = (dst, src)
+                src_name, dst_name = self._ntypes[u], self._ntypes[v]
+                edges[(src_name, f"{src_name}-{dst_name}", dst_name)] = (src, dst)
+                edges[(dst_name, f"{dst_name}-{src_name}", src_name)] = (dst, src)
         return edges
 
     def _read_feats(self):

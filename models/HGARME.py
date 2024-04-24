@@ -4,7 +4,7 @@ from models.HAN import HAN
 from models.SRN import Schema_Relation_Network
 from utils.evaluate import cosine_similarity, mse
 from functools import partial
-from dgl import DropEdge
+from dgl.transforms import DropEdge
 import traceback
 import datetime
 
@@ -161,6 +161,7 @@ class HGARME(nn.Module):
     def mask_edge_reconstruction(self, subgs, relations):
         ### src node should be encode to reconstruct adjacent matrix, rev relation should do same thing again
         ### we use dst-based graph's dst_node and src-based graph's dst_node to reconstruct adjacent matrix
+        ### But if there are connection on same type of node, we just use dst_based_subg to reconstruct adjacent matrix
         src_based_subg = subgs[0]
         dst_based_subg = subgs[1]
         all_adjmatrix_recons_loss = 0.0
@@ -180,14 +181,15 @@ class HGARME(nn.Module):
             src_node, rel, dst_node = rel_tuple
             if not self.all_edge_recons and dst_node != self.target_type:
                 continue
-            rev_rel = rel[::-1]
+            rev_rel = f"{dst_node}-{src_node}"
             rev_tuple = (dst_node, rev_rel, src_node)
-            mask_src_rels_subgraphs = src_based_subg[rev_rel].clone()
-            mask_dst_rels_subgraphs = dst_based_subg[rel].clone()
+            mask_src_rels_subgraphs = src_based_subg[rev_rel]
+            mask_dst_rels_subgraphs = dst_based_subg[rel]
 
-            drop_edge = DropEdge(p=self.mask_rate)
-            mask_src_rels_subgraphs = drop_edge(mask_src_rels_subgraphs)
-            mask_dst_rels_subgraphs = drop_edge(mask_dst_rels_subgraphs)
+            # drop_edge = DropEdge(p=self.mask_rate)
+            # mask_src_rels_subgraphs = drop_edge(mask_src_rels_subgraphs)
+            # mask_dst_rels_subgraphs = drop_edge(mask_dst_rels_subgraphs)
+
             dst_enc_rep = self.encoder(
                 {rel_tuple: mask_dst_rels_subgraphs},
                 dst_node,
@@ -204,7 +206,6 @@ class HGARME(nn.Module):
                 "encoder",
                 "adj_recons",
             )
-
             # src_ntype_rep=[self.edge_recons_encoder_to_decoder[ntype][idx](enc_rep) for idx,enc_rep in enumerate(src_ntype_enc_rep)]
             dst_rep = self.edge_recons_encoder_to_decoder(dst_enc_rep[rel])
             src_rep = self.edge_recons_encoder_to_decoder(src_enc_rep[rev_rel])
@@ -212,7 +213,10 @@ class HGARME(nn.Module):
             origin_adj_matrix = dst_based_subg[rel].adj()
             origin_adj_tensor = origin_adj_matrix.to_dense()
 
-            recon_adj_matrix = torch.mm(src_rep, dst_rep.T)
+            if src_node == dst_node:
+                recon_adj_matrix = torch.mm(src_rep, src_rep.T)
+            else:
+                recon_adj_matrix = torch.mm(src_rep, dst_rep.T)
             rel_pair_loss = self.criterion(origin_adj_tensor, recon_adj_matrix)
             all_adjmatrix_recons_loss += rel_pair_loss
         return all_adjmatrix_recons_loss
@@ -248,13 +252,12 @@ class HGARME(nn.Module):
 
     def seperate_relation_graph(self, graph, relations, use_ntype):
         rels_subgraphs = {}
-
         for rels_tuple in relations:
             ## dst_ntype include in relaions, then take its neighbor ntype as subgraph
-            src_ntype, rel, dst_ntype = rels_tuple
-            if use_ntype == dst_ntype:
-                rels_subgraphs[rels_tuple] = graph[rel].clone()
 
+            dst_ntype = rels_tuple[2]
+            if use_ntype == dst_ntype:
+                rels_subgraphs[rels_tuple] = graph[rels_tuple]
         return rels_subgraphs
 
     def encode_mask_noise(self, graph, ntype_x):

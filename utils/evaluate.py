@@ -41,9 +41,7 @@ def score(logits, labels):
     _, indices = torch.max(logits, dim=1)
     total = float(indices.size()[0])
     # acc = torch.eq(indices, labels).sum().item() / total
-    acc = roc_auc_score(
-        y_true=labels.detach().numpy(), y_score=logits.detach().numpy(), multi_class="ovr"
-    )
+    acc = roc_auc_score(y_true=labels.detach().numpy(), y_score=logits.detach().numpy(), multi_class="ovr")
 
     return (
         acc,
@@ -81,11 +79,10 @@ def node_classification_evaluate(device, enc_feat, args, num_classes, labels, ma
     }
 
     labels = {
-        "train": labels[train_mask].cpu(),
-        "val": labels[val_mask].cpu(),
-        "test": labels[test_mask].cpu(),
+        "train": labels[train_mask].squeeze().cpu(),
+        "val": labels[val_mask].squeeze().cpu(),
+        "test": labels[test_mask].squeeze().cpu(),
     }
-
     val_macro = []
     val_micro = []
     val_accuracy = []
@@ -94,6 +91,7 @@ def node_classification_evaluate(device, enc_feat, args, num_classes, labels, ma
     for epoch in tqdm(range(args.eva_epoches), position=0, desc=colorize("Evaluating", "green")):
         classifier.train()
         train_output = classifier(emb["train"]).cpu()
+
         eva_loss = F.cross_entropy(train_output, labels["train"])
         optimizer.zero_grad()
         eva_loss.backward(retain_graph=True)
@@ -102,8 +100,8 @@ def node_classification_evaluate(device, enc_feat, args, num_classes, labels, ma
         with torch.no_grad():
             classifier.eval()
             val_output = classifier(emb["val"]).cpu()
-            val_acc, val_micro_f1, val_macro_f1 = score(val_output, labels["val"])
 
+            val_acc, val_micro_f1, val_macro_f1 = score(val_output, labels["val"])
             if val_acc > best_val_acc:
                 best_val_acc = val_acc
                 best_model_state_dict = classifier.state_dict()

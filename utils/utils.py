@@ -1,4 +1,5 @@
 import yaml
+import os
 
 
 def load_config(args, path):
@@ -26,9 +27,18 @@ def colorize(string, color):
 
 
 def name_file(args, file, log_times):
+    curr_file = os.path.dirname(os.path.abspath(__file__))
+    project_path = os.path.join(curr_file, "..")
     if file == "log":
+        log_path = os.path.join(project_path, "log", "performance")
+        print(log_path)
+        if not os.path.exists(log_path):
+            os.makedirs(log_path)
         file_name = f"./{file}/performance/{log_times}_HGARME("
     else:
+        img_path = os.path.join(project_path, "img")
+        if not os.path.exists(img_path):
+            os.makedirs(img_path)
         file_name = f"./{file}/{log_times}_HGARME("
     if args.edge_recons:
         file_name += "edge"
