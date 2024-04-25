@@ -178,6 +178,10 @@ class HeCoDataset(DGLDataset):
         return True
 
     @property
+    def multilabel(self):
+        return False
+
+    @property
     def label_ratio(self):
         return self._label_ratio
 

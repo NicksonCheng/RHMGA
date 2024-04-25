@@ -1,1 +1,1 @@
-python main.py --dataset PubMed
+python main.py --dataset PubMed --devices 0 --edge_recons False

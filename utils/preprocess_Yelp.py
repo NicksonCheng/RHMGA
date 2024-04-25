@@ -2,6 +2,7 @@ import os
 import dgl
 import torch
 import pandas as pd
+import scipy.sparse as sp
 from dgl.data import DGLDataset
 from torch_geometric.data import HeteroData
 from tqdm import tqdm
@@ -10,38 +11,22 @@ from collections import Counter
 from sklearn.model_selection import train_test_split
 
 
-class PubMedDataset(DGLDataset):
+class YelpDataset(DGLDataset):
     def __init__(self, url=None, raw_dir=None, save_dir=None, force_reload=False, verbose=False):
         self.graph = HeteroData()
-        self._ntypes = {"G": "Gene", "D": "Disease", "C": "Chemical", "S": "Species"}
+        self._ntypes = {"B": "Business", "L": "Location", "S": "Stars", "P": "Phrase"}
         self._relations = [
-            ("Gene", "Gene-Gene", "Gene"),
-            ("Gene", "Gene-Disease", "Disease"),
-            ("Disease", "Disease-Disease", "Disease"),
-            ("Chemical", "Chemical-Gene", "Gene"),
-            ("Chemical", "Chemical-Disease", "Disease"),
-            ("Chemical", "Chemical-Chemical", "Chemical"),
-            ("Chemical", "Chemical-Species", "Species"),
-            ("Species", "Species-Gene", "Gene"),
-            ("Species", "Species-Disease", "Disease"),
-            ("Species", "Species-Species", "Species"),
-        ]
-        self._classes = [
-            "cardiovascular_disease",
-            "glandular_disease",
-            "nervous_disorder",
-            "communicable_disease",
-            "inflammatory_disease",
-            "pycnosis",
-            "skin_disease",
-            "cancer",
+            ("Business", "Business-Location", "Location"),
+            ("Business", "Business-Stars", "Stars"),
+            ("Business", "Business-Phrase", "Phrase"),
+            ("Phrase", "Phrase-Phrase", "Phrase"),
         ]
         curr_dir = os.path.dirname(__file__)
         parent_dir = os.path.dirname(curr_dir)
-        self.data_path = os.path.join(parent_dir, "data/CKD_data/PubMed")
+        self.data_path = os.path.join(parent_dir, "data/Yelp")
         self.add_reverse_relation()
-        super(PubMedDataset, self).__init__(
-            name="pubmed",
+        super(YelpDataset, self).__init__(
+            name="Yelp",
             url=url,
             raw_dir=raw_dir,
             save_dir=save_dir,
@@ -61,45 +46,44 @@ class PubMedDataset(DGLDataset):
 
     def load(self):
         print("loading graph")
-        graphs, _ = load_graphs(os.path.join(self.data_path, "PubMed_dgl_graph.bin"))
+        graphs, _ = load_graphs(os.path.join(self.data_path, "Yelp_dgl_graph.bin"))
         self.graph = graphs[0]
 
     def save(self):
         print("saving graph")
-        save_graphs(os.path.join(self.data_path, "PubMed_dgl_graph.bin"), [self.graph])
+        save_graphs(os.path.join(self.data_path, "Yelp_dgl_graph.bin"), [self.graph])
 
     def process(self):
+        chunks = []
+        for chunk in pd.read_csv(os.path.join(self.data_path, "node.dat"), sep="\t", names=["node_id", "node_name", "node_type"], chunksize=10000):
+            chunks.append(chunk)
 
-        nodes_file = pd.read_csv(
-            os.path.join(self.data_path, "node.dat"),
-            sep="\t",
-            names=["node_id", "node_name", "node_type", "node_attributes"],
-        )
+        nodes_file = pd.concat(chunks, ignore_index=True)
+
         nodes = nodes_file["node_id"].tolist()
         nodes_type = nodes_file["node_type"].tolist()
-        nodes_attributes = nodes_file["node_attributes"].tolist()
 
         ## mapping each node id(specific type) into new id by dictionary
         node_dict = {ntype: {"id": [], "feat": []} for ntype in self._ntypes.values()}
-        for n, t, attr in zip(nodes, nodes_type, nodes_attributes):
+        for n, t in zip(nodes, nodes_type):
 
             ntype = list(self._ntypes.values())[t]
 
             node_dict[ntype]["id"].append(n)
-            feat = attr.split(",")
-            feat = [float(f) for f in feat]
-            node_dict[ntype]["feat"].append(feat)
-
+        for t in node_dict.keys():
+            num_ntype = len(node_dict[t]["id"])
+            node_dict[t]["feat"] = torch.from_numpy(sp.eye(num_ntype).toarray()).float()
         ## sort node id and feature by node id
-        for ntype in self._ntypes.values():
-            combined_list = zip(node_dict[ntype]["id"], node_dict[ntype]["feat"])
+        # for ntype in self._ntypes.values():
+        #     combined_list = zip(node_dict[ntype]["id"], node_dict[ntype]["feat"])
 
-            sorted_combined_list = sorted(combined_list, key=lambda x: x[0])
-            sort_id = [x[0] for x in sorted_combined_list]
-            sort_feat = [x[1] for x in sorted_combined_list]
+        #     sorted_combined_list = sorted(combined_list, key=lambda x: x[0])
+        #     sort_id = [x[0] for x in sorted_combined_list]
+        #     sort_feat = [x[1] for x in sorted_combined_list]
 
-            node_dict[ntype]["id"] = sort_id
-            node_dict[ntype]["feat"] = torch.tensor(sort_feat)
+        #     node_dict[ntype]["id"] = sort_id
+        #     node_dict[ntype]["feat"] = torch.tensor(sort_feat)
+
         self.graph = dgl.heterograph(self._read_edges(node_dict))
         self._read_feats_labels(node_dict)
 
@@ -189,7 +173,7 @@ class PubMedDataset(DGLDataset):
             self.graph.nodes[self.predict_ntype].data[name] = mask
 
     def has_cache(self):
-        return os.path.exists(os.path.join(self.data_path, "PubMed_dgl_graph.bin"))
+        return os.path.exists(os.path.join(self.data_path, "Yelp_dgl_graph.bin"))
 
     def __getitem__(self, i):
         return self.graph
@@ -199,7 +183,7 @@ class PubMedDataset(DGLDataset):
 
     @property
     def num_classes(self):
-        return len(self._classes)
+        return 16
 
     @property
     def relations(self):
@@ -207,7 +191,7 @@ class PubMedDataset(DGLDataset):
 
     @property
     def predict_ntype(self):
-        return "Disease"
+        return "Business"
 
     @property
     def has_label_ratio(self):
@@ -215,4 +199,4 @@ class PubMedDataset(DGLDataset):
 
     @property
     def multilabel(self):
-        return False
+        return True

@@ -1,1 +1,0 @@
-python main.py --dataset heco_freebase --epoches 4 --eva_interval 2

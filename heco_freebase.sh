@@ -1,0 +1,1 @@
+python main.py --dataset heco_freebase --devices 0

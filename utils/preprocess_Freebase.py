@@ -10,38 +10,54 @@ from collections import Counter
 from sklearn.model_selection import train_test_split
 
 
-class PubMedDataset(DGLDataset):
+class FreebaseDataset(DGLDataset):
     def __init__(self, url=None, raw_dir=None, save_dir=None, force_reload=False, verbose=False):
         self.graph = HeteroData()
-        self._ntypes = {"G": "Gene", "D": "Disease", "C": "Chemical", "S": "Species"}
+        self._ntypes = {"B": "Book", "F": "Film", "M": "Music", "S": "Sports", "P": "People", "L": "Location", "O": "Organization", "BU": "Business"}
         self._relations = [
-            ("Gene", "Gene-Gene", "Gene"),
-            ("Gene", "Gene-Disease", "Disease"),
-            ("Disease", "Disease-Disease", "Disease"),
-            ("Chemical", "Chemical-Gene", "Gene"),
-            ("Chemical", "Chemical-Disease", "Disease"),
-            ("Chemical", "Chemical-Chemical", "Chemical"),
-            ("Chemical", "Chemical-Species", "Species"),
-            ("Species", "Species-Gene", "Gene"),
-            ("Species", "Species-Disease", "Disease"),
-            ("Species", "Species-Species", "Species"),
-        ]
-        self._classes = [
-            "cardiovascular_disease",
-            "glandular_disease",
-            "nervous_disorder",
-            "communicable_disease",
-            "inflammatory_disease",
-            "pycnosis",
-            "skin_disease",
-            "cancer",
+            ("Book", "Book-Book", "Book"),
+            ("Book", "Book-Film", "Film"),
+            ("Book", "Book-Sports", "Sports"),
+            ("Book", "Book-Location", "Location"),
+            ("Book", "Book-Organization", "Organization"),
+            ("Film", "Film-Film", "Film"),
+            ("Music", "Music-Book", "Book"),
+            ("Music", "Music-Film", "Film"),
+            ("Music", "Music-Music", "Music"),
+            ("Music", "Music-Sports", "Sports"),
+            ("Music", "Music-Location", "Location"),
+            ("Sports", "Sports-Film", "Film"),
+            ("Sports", "Sports-Sports", "Sports"),
+            ("Sports", "Sports-Location", "Location"),
+            ("People", "People-Book", "Book"),
+            ("People", "People-Film", "Film"),
+            ("People", "People-Music", "Music"),
+            ("People", "People-Sports", "Sports"),
+            ("People", "People-People", "People"),
+            ("People", "People-Location", "Location"),
+            ("People", "People-Organization", "Organization"),
+            ("People", "People-Business", "Business"),
+            ("Location", "Location-Film", "Film"),
+            ("Location", "Location-Location", "Location"),
+            ("Organization", "Organization-Film", "Film"),
+            ("Organization", "Organization-Music", "Music"),
+            ("Organization", "Organization-Sports", "Sports"),
+            ("Organization", "Organization-Location", "Location"),
+            ("Organization", "Organization-Organization", "Organization"),
+            ("Organization", "Organization-Business", "Business"),
+            ("Business", "Business-Book", "Book"),
+            ("Business", "Business-Film", "Film"),
+            ("Business", "Business-Music", "Music"),
+            ("Business", "Business-Sports", "Sports"),
+            ("Business", "Business-Location", "Location"),
+            ("Business", "Business-Business", "Business"),
         ]
         curr_dir = os.path.dirname(__file__)
         parent_dir = os.path.dirname(curr_dir)
-        self.data_path = os.path.join(parent_dir, "data/CKD_data/PubMed")
+        self.data_path = os.path.join(parent_dir, "data/CKD_data/Freebase")
         self.add_reverse_relation()
-        super(PubMedDataset, self).__init__(
-            name="pubmed",
+        super(FreebaseDataset, self).__init__(
+            name="Freebase",
             url=url,
             raw_dir=raw_dir,
             save_dir=save_dir,
@@ -61,20 +77,25 @@ class PubMedDataset(DGLDataset):
 
     def load(self):
         print("loading graph")
-        graphs, _ = load_graphs(os.path.join(self.data_path, "PubMed_dgl_graph.bin"))
+        graphs, _ = load_graphs(os.path.join(self.data_path, "Freebase_dgl_graph.bin"))
         self.graph = graphs[0]
+        self._num_classes = self.graph.nodes[self.predict_ntype].data["label"].max().item() + 1
 
     def save(self):
+        if self.has_cache():
+            return
         print("saving graph")
-        save_graphs(os.path.join(self.data_path, "PubMed_dgl_graph.bin"), [self.graph])
+        save_graphs(os.path.join(self.data_path, "Freebase_dgl_graph.bin"), [self.graph])
 
     def process(self):
-
-        nodes_file = pd.read_csv(
-            os.path.join(self.data_path, "node.dat"),
-            sep="\t",
-            names=["node_id", "node_name", "node_type", "node_attributes"],
-        )
+        if self.has_cache():
+            return
+        chunks = []
+        for chunk in pd.read_csv(
+            os.path.join(self.data_path, "node.dat"), sep="\t", names=["node_id", "node_name", "node_type", "node_attributes"], chunksize=100000
+        ):
+            chunks.append(chunk)
+        nodes_file = pd.concat(chunks, ignore_index=True)
         nodes = nodes_file["node_id"].tolist()
         nodes_type = nodes_file["node_type"].tolist()
         nodes_attributes = nodes_file["node_attributes"].tolist()
@@ -89,17 +110,18 @@ class PubMedDataset(DGLDataset):
             feat = attr.split(",")
             feat = [float(f) for f in feat]
             node_dict[ntype]["feat"].append(feat)
-
+        for ntype in node_dict.keys():
+            node_dict[ntype]["feat"] = torch.tensor(node_dict[ntype]["feat"])
         ## sort node id and feature by node id
-        for ntype in self._ntypes.values():
-            combined_list = zip(node_dict[ntype]["id"], node_dict[ntype]["feat"])
+        # for ntype in self._ntypes.values():
+        #     combined_list = zip(node_dict[ntype]["id"], node_dict[ntype]["feat"])
 
-            sorted_combined_list = sorted(combined_list, key=lambda x: x[0])
-            sort_id = [x[0] for x in sorted_combined_list]
-            sort_feat = [x[1] for x in sorted_combined_list]
+        #     sorted_combined_list = sorted(combined_list, key=lambda x: x[0])
+        #     sort_id = [x[0] for x in sorted_combined_list]
+        #     sort_feat = [x[1] for x in sorted_combined_list]
 
-            node_dict[ntype]["id"] = sort_id
-            node_dict[ntype]["feat"] = torch.tensor(sort_feat)
+        #     node_dict[ntype]["id"] = sort_id
+        #     node_dict[ntype]["feat"] = torch.tensor(sort_feat)
         self.graph = dgl.heterograph(self._read_edges(node_dict))
         self._read_feats_labels(node_dict)
 
@@ -164,6 +186,7 @@ class PubMedDataset(DGLDataset):
             node_label = row["node_label"]
             self.graph.nodes[self.predict_ntype].data["label"][mapped_node_id] = torch.tensor([node_label])
             label_nodes_indices.append(mapped_node_id)
+        self._num_classes = self.graph.nodes[self.predict_ntype].data["label"].max().item() + 1
 
         ## split label node into train valid test
 
@@ -189,7 +212,7 @@ class PubMedDataset(DGLDataset):
             self.graph.nodes[self.predict_ntype].data[name] = mask
 
     def has_cache(self):
-        return os.path.exists(os.path.join(self.data_path, "PubMed_dgl_graph.bin"))
+        return os.path.exists(os.path.join(self.data_path, "Freebase_dgl_graph.bin"))
 
     def __getitem__(self, i):
         return self.graph
@@ -199,7 +222,7 @@ class PubMedDataset(DGLDataset):
 
     @property
     def num_classes(self):
-        return len(self._classes)
+        return self._num_classes
 
     @property
     def relations(self):
@@ -207,7 +230,7 @@ class PubMedDataset(DGLDataset):
 
     @property
     def predict_ntype(self):
-        return "Disease"
+        return "Book"
 
     @property
     def has_label_ratio(self):

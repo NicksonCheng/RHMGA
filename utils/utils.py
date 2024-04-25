@@ -30,16 +30,17 @@ def name_file(args, file, log_times):
     curr_file = os.path.dirname(os.path.abspath(__file__))
     project_path = os.path.join(curr_file, "..")
     if file == "log":
-        log_path = os.path.join(project_path, "log", "performance")
-        print(log_path)
+        write_path = os.path.join(file, "performance", args.dataset)
+        log_path = os.path.join(project_path, write_path)
         if not os.path.exists(log_path):
             os.makedirs(log_path)
-        file_name = f"./{file}/performance/{log_times}_HGARME("
+        file_name = f"./{write_path}/{log_times}_HGARME("
     else:
-        img_path = os.path.join(project_path, "img")
+        write_path = os.path.join(file, args.dataset)
+        img_path = os.path.join(project_path, write_path)
         if not os.path.exists(img_path):
             os.makedirs(img_path)
-        file_name = f"./{file}/{log_times}_HGARME("
+        file_name = f"./{write_path}/{log_times}_HGARME("
     if args.edge_recons:
         file_name += "edge"
         if args.all_edge_recons:

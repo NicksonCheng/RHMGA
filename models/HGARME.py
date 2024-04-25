@@ -5,8 +5,10 @@ from models.SRN import Schema_Relation_Network
 from utils.evaluate import cosine_similarity, mse
 from functools import partial
 from dgl.transforms import DropEdge
+from collections import Counter
 import traceback
 import datetime
+import dgl
 
 
 class MultiLayerPerception(nn.Module):
@@ -177,6 +179,7 @@ class HGARME(nn.Module):
             "dst_x": src_based_subg.dstdata["feat"],
         }
 
+        # print(dst_based_subg[("Gene", "Gene-Gene", "Gene")])
         for rel_tuple in relations:
             src_node, rel, dst_node = rel_tuple
             if not self.all_edge_recons and dst_node != self.target_type:
@@ -186,9 +189,10 @@ class HGARME(nn.Module):
             mask_src_rels_subgraphs = src_based_subg[rev_rel]
             mask_dst_rels_subgraphs = dst_based_subg[rel]
 
-            # drop_edge = DropEdge(p=self.mask_rate)
-            # mask_src_rels_subgraphs = drop_edge(mask_src_rels_subgraphs)
-            # mask_dst_rels_subgraphs = drop_edge(mask_dst_rels_subgraphs)
+            drop_edge = DropEdge(p=self.mask_rate)
+
+            mask_src_rels_subgraphs = drop_edge(mask_src_rels_subgraphs)
+            mask_dst_rels_subgraphs = drop_edge(mask_dst_rels_subgraphs)
 
             dst_enc_rep = self.encoder(
                 {rel_tuple: mask_dst_rels_subgraphs},
@@ -211,8 +215,8 @@ class HGARME(nn.Module):
             src_rep = self.edge_recons_encoder_to_decoder(src_enc_rep[rev_rel])
 
             origin_adj_matrix = dst_based_subg[rel].adj()
-            origin_adj_tensor = origin_adj_matrix.to_dense()
 
+            origin_adj_tensor = origin_adj_matrix.to_dense()
             if src_node == dst_node:
                 recon_adj_matrix = torch.mm(src_rep, src_rep.T)
             else:
@@ -231,7 +235,6 @@ class HGARME(nn.Module):
             dst_x = {self.target_type: dst_x[self.target_type]}
         use_dst_x, (ntypes_mask_nodes, ntypes_keep_nodes) = self.encode_mask_noise(graph, dst_x)
         all_node_feature_recons_loss = 0.0
-
         for use_ntype, use_x in use_dst_x.items():
             rels_subgraphs = self.seperate_relation_graph(graph, relations, use_ntype)
             mask_nodes = ntypes_mask_nodes[use_ntype]

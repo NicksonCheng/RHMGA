@@ -1,32 +1,19 @@
-def heapify(arr, n, i):
-    largest = i
-    l = 2 * i + 1
-    r = 2 * i + 2
+import numpy as np
+from sklearn.datasets import make_multilabel_classification
+from sklearn.multioutput import MultiOutputClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import roc_auc_score
 
-    if l < n and arr[l] > arr[largest]:
-        largest = l
+X, y = make_multilabel_classification(random_state=0)
+clf = LogisticRegression(solver="liblinear").fit(X, y)
+clf = MultiOutputClassifier(clf).fit(X, y)
+# get a list of n_output containing probability arrays of shape
+# (n_samples, n_classes)
+y_pred = clf.predict_proba(X)
+# extract the positive columns for each output
+y_pred = np.transpose([pred[:, 1] for pred in y_pred])
+roc_auc_score(y, y_pred, average=None)
+from sklearn.linear_model import RidgeClassifierCV
 
-    if r < n and arr[r] > arr[largest]:
-        largest = r
-
-    if largest != i:
-        arr[i], arr[largest] = arr[largest], arr[i]
-        heapify(arr, n, largest)
-
-
-def heapSort(arr):
-    n = len(arr)
-
-    for i in range(n // 2 - 1, -1, -1):
-        heapify(arr, n, i)
-
-    for i in range(n - 1, 0, -1):
-        arr[i], arr[0] = arr[0], arr[i]
-        heapify(arr, i, 0)
-
-
-# Example usage:
-arr = [12, 11, 13, 5, 6, 7]
-heapSort(arr)
-print("Sorted array is:", arr)
-# Output: Sorted array is: [5, 6, 7, 11, 12, 13]
+clf = RidgeClassifierCV().fit(X, y)
+roc_auc_score(y, clf.decision_function(X), average=None)

@@ -21,12 +21,15 @@ from utils.preprocess_HeCo import (
     AMinerHeCoDataset,
     FreebaseHeCoDataset,
 )
+from utils.preprocess_Freebase import FreebaseDataset
+from utils.preprocess_Yelp import YelpDataset
 from utils.preprocess_PubMed import PubMedDataset
 from utils.evaluate import score, LogisticRegression, MLP, node_classification_evaluate
 from utils.utils import load_config, colorize, name_file
 from models.HGARME import HGARME
 from models.HAN import HAN
 from tqdm import tqdm
+from collections import Counter
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
 
@@ -50,6 +53,12 @@ heterogeneous_dataset = {
     "PubMed": {
         "name": PubMedDataset,
     },
+    "Yelp": {
+        "name": YelpDataset,
+    },
+    "Freebase": {
+        "name": FreebaseDataset,
+    },
     # "heco_aminer": {
     #     "name": AMinerHeCoDataset,
     #     "relations": [("paper", "pa", "author"), ("paper", "pr", "reference")],
@@ -61,7 +70,7 @@ def train(args):
     start_t = time.time()
     # torch.cuda.set_device()
     device_0 = torch.device(f"cuda:{args.devices}" if torch.cuda.is_available() else "cpu")
-    device_1 = torch.device(f"cuda:{args.devices ^ 1 }" if torch.cuda.is_available() else "cpu")
+    device_1 = torch.device(f"cuda:{args.devices}" if torch.cuda.is_available() else "cpu")
 
     data = heterogeneous_dataset[args.dataset]["name"]()
     print("Preprocessing Time taken:", time.time() - start_t, "seconds")
@@ -145,8 +154,8 @@ def train(args):
             loss.backward()
             optimizer.step()
             scheduler.step()
-            # print(f"Batch {i} Loss: {loss.item()}")
             break
+            # print(f"Batch {i} Loss: {loss.item()}")
         avg_train_loss = train_loss / len(dataloader)
         print(f"Epoch:{epoch+1}/{args.epoches} Training Loss:{(avg_train_loss)} Learning_rate={scheduler.get_last_lr()}")
         total_loss.append(avg_train_loss)
@@ -169,12 +178,7 @@ def train(args):
                 if data.has_label_ratio:
                     for ratio in data.label_ratio:
                         max_acc, max_micro, max_macro = node_classification_evaluate(
-                            device_1,
-                            enc_feat,
-                            args,
-                            num_classes,
-                            target_type_labels,
-                            masked_graph[ratio],
+                            device_1, enc_feat, args, num_classes, target_type_labels, masked_graph[ratio], data.multilabel
                         )
                         if ratio not in performance:
                             performance[ratio] = {"Acc": [], "Micro-F1": [], "Macro-F1": []}
@@ -193,12 +197,7 @@ def train(args):
 
                 else:
                     max_acc, max_micro, max_macro = node_classification_evaluate(
-                        device_1,
-                        enc_feat,
-                        args,
-                        num_classes,
-                        target_type_labels,
-                        masked_graph,
+                        device_1, enc_feat, args, num_classes, target_type_labels, masked_graph, data.multilabel
                     )
                     if not performance:
                         performance = {"Acc": [], "Micro-F1": [], "Macro-F1": []}
@@ -212,7 +211,9 @@ def train(args):
                             max_macro,
                         )
                     )
-    print(performance)
+    file_name = name_file(args, "log", log_times)
+    with open(file_name, "a") as log_file:
+        log_file.write(str(args))
     ####
     ## plot the performance
     ####
