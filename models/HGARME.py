@@ -178,49 +178,50 @@ class HGARME(nn.Module):
             "src_x": src_based_subg.srcdata["feat"],
             "dst_x": src_based_subg.dstdata["feat"],
         }
-
+        dst_based_embs = {}
+        src_based_embs = {}
         # print(dst_based_subg[("Gene", "Gene-Gene", "Gene")])
-        for rel_tuple in relations:
-            src_node, rel, dst_node = rel_tuple
-            if not self.all_edge_recons and dst_node != self.target_type:
+        for use_ntype, use_x in dst_based_x["dst_x"].items():
+            if not self.all_edge_recons and use_ntype != self.target_type:
                 continue
-            rev_rel = f"{dst_node}-{src_node}"
-            rev_tuple = (dst_node, rev_rel, src_node)
-            mask_src_rels_subgraphs = src_based_subg[rev_rel]
-            mask_dst_rels_subgraphs = dst_based_subg[rel]
-
-            drop_edge = DropEdge(p=self.mask_rate)
-
-            mask_src_rels_subgraphs = drop_edge(mask_src_rels_subgraphs)
-            mask_dst_rels_subgraphs = drop_edge(mask_dst_rels_subgraphs)
+            mask_dst_rels_subgraphs = self.seperate_relation_graph(dst_based_subg, relations, use_ntype, mask_edge=True)
 
             dst_enc_rep = self.encoder(
-                {rel_tuple: mask_dst_rels_subgraphs},
-                dst_node,
-                dst_based_x["dst_x"][dst_node],
-                {src_node: dst_based_x["src_x"][src_node]},
+                mask_dst_rels_subgraphs,
+                use_ntype,
+                use_x,
+                dst_based_x["src_x"],
                 "encoder",
-                "adj_recons",
-            )
-            src_enc_rep = self.encoder(
-                {rev_tuple: mask_src_rels_subgraphs},
-                src_node,
-                src_based_x["dst_x"][src_node],
-                {dst_node: src_based_x["src_x"][dst_node]},
-                "encoder",
-                "adj_recons",
             )
             # src_ntype_rep=[self.edge_recons_encoder_to_decoder[ntype][idx](enc_rep) for idx,enc_rep in enumerate(src_ntype_enc_rep)]
-            dst_rep = self.edge_recons_encoder_to_decoder(dst_enc_rep[rel])
-            src_rep = self.edge_recons_encoder_to_decoder(src_enc_rep[rev_rel])
+            dst_based_embs[use_ntype] = self.edge_recons_encoder_to_decoder(dst_enc_rep)
+        for use_ntype, use_x in src_based_x["dst_x"].items():
+            if not self.all_edge_recons and use_ntype != self.target_type:
+                continue
+            mask_src_rels_subgraphs = self.seperate_relation_graph(src_based_subg, relations, use_ntype, mask_edge=True)
 
+            src_enc_rep = self.encoder(
+                mask_src_rels_subgraphs,
+                use_ntype,
+                use_x,
+                src_based_x["src_x"],
+                "encoder",
+            )
+            # src_ntype_rep=[self.edge_recons_encoder_to_decoder[ntype][idx](enc_rep) for idx,enc_rep in enumerate(src_ntype_enc_rep)]
+
+            src_based_embs[use_ntype] = self.edge_recons_encoder_to_decoder(src_enc_rep)
+        for rel_tuple in relations:
+            src_node, rel, dst_node = rel_tuple
             origin_adj_matrix = dst_based_subg[rel].adj()
 
             origin_adj_tensor = origin_adj_matrix.to_dense()
             if src_node == dst_node:
-                recon_adj_matrix = torch.mm(src_rep, src_rep.T)
+                src_dec_rep = src_based_embs[dst_node]
+                recon_adj_matrix = torch.mm(src_dec_rep, src_dec_rep.T)
             else:
-                recon_adj_matrix = torch.mm(src_rep, dst_rep.T)
+                src_dec_rep = src_based_embs[src_node]
+                dst_dec_rep = dst_based_embs[dst_node]
+                recon_adj_matrix = torch.mm(src_dec_rep, dst_dec_rep.T)
             rel_pair_loss = self.criterion(origin_adj_tensor, recon_adj_matrix)
             all_adjmatrix_recons_loss += rel_pair_loss
         return all_adjmatrix_recons_loss
@@ -236,10 +237,10 @@ class HGARME(nn.Module):
         use_dst_x, (ntypes_mask_nodes, ntypes_keep_nodes) = self.encode_mask_noise(graph, dst_x)
         all_node_feature_recons_loss = 0.0
         for use_ntype, use_x in use_dst_x.items():
-            rels_subgraphs = self.seperate_relation_graph(graph, relations, use_ntype)
+            rels_subgraphs = self.seperate_relation_graph(graph, relations, use_ntype, mask_edge=False)
             mask_nodes = ntypes_mask_nodes[use_ntype]
             if self.encoder_type == "SRN":
-                enc_rep = self.encoder(rels_subgraphs, use_ntype, use_x, src_x, "encoder", "nf_recons")
+                enc_rep = self.encoder(rels_subgraphs, use_ntype, use_x, src_x, "encoder")
             hidden_rep = self.encoder_to_decoder(enc_rep)
             # remask
             hidden_rep[mask_nodes] = 0.0
@@ -253,14 +254,25 @@ class HGARME(nn.Module):
             all_node_feature_recons_loss += ntype_loss
         return all_node_feature_recons_loss
 
-    def seperate_relation_graph(self, graph, relations, use_ntype):
+    def seperate_relation_graph(self, graph, relations, use_ntype, mask_edge=False):
+
         rels_subgraphs = {}
         for rels_tuple in relations:
             ## dst_ntype include in relaions, then take its neighbor ntype as subgraph
 
             dst_ntype = rels_tuple[2]
             if use_ntype == dst_ntype:
-                rels_subgraphs[rels_tuple] = graph[rels_tuple]
+                clone_g = graph.clone()
+                rels_subg = clone_g[rels_tuple]
+                if mask_edge:
+                    num_edges = rels_subg.num_edges()
+                    permutation = torch.randperm(num_edges).to(rels_subg.device)
+                    num_mask_edges = int(self.mask_rate * num_edges)
+                    mask_edges = permutation[:num_mask_edges]
+                    keep_edges = permutation[num_mask_edges:]
+                    rels_subg.remove_edges(mask_edges)
+
+                rels_subgraphs[rels_tuple] = rels_subg
         return rels_subgraphs
 
     def encode_mask_noise(self, graph, ntype_x):

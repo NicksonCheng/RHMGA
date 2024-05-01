@@ -39,7 +39,7 @@ class HeCoDataset(DGLDataset):
     * AMinerHeCoDataset
     """
 
-    def __init__(self, name, ntypes):
+    def __init__(self, reverse_edge, name, ntypes):
         url = "https://api.github.com/repos/liun-online/HeCo/zipball/main"
         self._ntypes = {ntype[0]: ntype for ntype in ntypes}
         self._relations = [
@@ -283,8 +283,8 @@ class FreebaseHeCoDataset(HeCoDataset):
     * train_mask, val_mask, test_mask: tensor(N_movie)
     """
 
-    def __init__(self):
-        super().__init__("freebase", ["movie", "author", "director", "writer"])
+    def __init__(self, reverse_edge):
+        super().__init__(reverse_edge, "freebase", ["movie", "author", "director", "writer"])
 
     def _read_feats(self):
         feats = {}

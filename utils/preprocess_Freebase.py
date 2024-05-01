@@ -11,7 +11,9 @@ from sklearn.model_selection import train_test_split
 
 
 class FreebaseDataset(DGLDataset):
-    def __init__(self, url=None, raw_dir=None, save_dir=None, force_reload=False, verbose=False):
+    def __init__(self, reverse_edge=True, url=None, raw_dir=None, save_dir=None, force_reload=False, verbose=False):
+        self.reverse_edge = reverse_edge
+
         self.graph = HeteroData()
         self._ntypes = {"B": "Book", "F": "Film", "M": "Music", "S": "Sports", "P": "People", "L": "Location", "O": "Organization", "BU": "Business"}
         self._relations = [
@@ -55,7 +57,10 @@ class FreebaseDataset(DGLDataset):
         curr_dir = os.path.dirname(__file__)
         parent_dir = os.path.dirname(curr_dir)
         self.data_path = os.path.join(parent_dir, "data/CKD_data/Freebase")
-        self.add_reverse_relation()
+        self.g_file = "Freebase_dgl_graph.bin"
+        if self.reverse_edge:
+            self.g_file = "Freebase_dgl_graph(reverse).bin"
+            self.add_reverse_relation()
         super(FreebaseDataset, self).__init__(
             name="Freebase",
             url=url,
@@ -66,6 +71,7 @@ class FreebaseDataset(DGLDataset):
         )
 
     def add_reverse_relation(self):
+        print("add reverse relation")
         for rel_tuple in self._relations:
             src, rel, dst = rel_tuple
             rev_rel = (dst, f"{dst}-{src}", src)
@@ -77,7 +83,8 @@ class FreebaseDataset(DGLDataset):
 
     def load(self):
         print("loading graph")
-        graphs, _ = load_graphs(os.path.join(self.data_path, "Freebase_dgl_graph.bin"))
+
+        graphs, _ = load_graphs(os.path.join(self.data_path, self.g_file))
         self.graph = graphs[0]
         self._num_classes = self.graph.nodes[self.predict_ntype].data["label"].max().item() + 1
 
@@ -85,7 +92,7 @@ class FreebaseDataset(DGLDataset):
         if self.has_cache():
             return
         print("saving graph")
-        save_graphs(os.path.join(self.data_path, "Freebase_dgl_graph.bin"), [self.graph])
+        save_graphs(os.path.join(self.data_path, self.g_file), [self.graph])
 
     def process(self):
         if self.has_cache():
@@ -202,6 +209,7 @@ class FreebaseDataset(DGLDataset):
         ## sklearn split data
         train_indices, test_indices = train_test_split(label_nodes_indices, test_size=split_ratio["test"], random_state=42)
         train_indices, val_indices = train_test_split(train_indices, test_size=split_ratio["val"], random_state=42)
+        print(len(train_indices), len(val_indices), len(test_indices))
         eva_indices = {
             "train": train_indices,
             "val": val_indices,
@@ -212,7 +220,8 @@ class FreebaseDataset(DGLDataset):
             self.graph.nodes[self.predict_ntype].data[name] = mask
 
     def has_cache(self):
-        return os.path.exists(os.path.join(self.data_path, "Freebase_dgl_graph.bin"))
+        return False
+        return os.path.exists(os.path.join(self.data_path, self.g_file))
 
     def __getitem__(self, i):
         return self.graph

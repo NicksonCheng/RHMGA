@@ -114,7 +114,6 @@ class Schema_Relation_Network(nn.Module):
         dst_feat,
         src_feat,
         enc_dec="encoder",
-        recons_type="nf_recons",
     ):
         ## Linear Transformation to same dimension
         if enc_dec == "encoder":
@@ -129,8 +128,6 @@ class Schema_Relation_Network(nn.Module):
             # z_r[rel] = self.gats[rel](rel_graph, (neighbors_feat[src_ntype], dst_feat)).squeeze()
         ## semantic aggregation with all relation-based embedding
         ## if this is edge reconstruction, we do not used semantic aggreagation, just return the z_r
-        if recons_type == "adj_recons":
-            return z_r
         z_r = torch.stack(list(z_r.values()), dim=1)
         z = self.semantic_attention(z_r)
 

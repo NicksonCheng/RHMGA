@@ -72,7 +72,7 @@ def train(args):
     device_0 = torch.device(f"cuda:{args.devices}" if torch.cuda.is_available() else "cpu")
     device_1 = torch.device(f"cuda:{args.devices}" if torch.cuda.is_available() else "cpu")
 
-    data = heterogeneous_dataset[args.dataset]["name"]()
+    data = heterogeneous_dataset[args.dataset]["name"](args.reverse_edge)
     print("Preprocessing Time taken:", time.time() - start_t, "seconds")
     start_t = time.time()
     relations = data.relations
@@ -154,7 +154,6 @@ def train(args):
             loss.backward()
             optimizer.step()
             scheduler.step()
-            break
             # print(f"Batch {i} Loss: {loss.item()}")
         avg_train_loss = train_loss / len(dataloader)
         print(f"Epoch:{epoch+1}/{args.epoches} Training Loss:{(avg_train_loss)} Learning_rate={scheduler.get_last_lr()}")
@@ -273,6 +272,7 @@ if __name__ == "__main__":
     parser.add_argument("--all_feat_recons", default=True, help="used all type node feature reconstruction")
     parser.add_argument("--all_edge_recons", default=True, help="use all type node edge reconstruction")
     parser.add_argument("--use_config", default=True, help="use best parameter in config.yaml ")
+    parser.add_argument("--reverse_edge", default=True, help="add reverse edge or not")
     known_args, unknow_args = parser.parse_known_args()
 
     cmd_args = [arg.lstrip("-") for arg in sys.argv[1:] if arg.startswith("--")]
