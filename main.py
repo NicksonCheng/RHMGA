@@ -21,6 +21,7 @@ from utils.preprocess_HeCo import (
     AMinerHeCoDataset,
     FreebaseHeCoDataset,
 )
+from utils.preprocess_IMDB import IMDbDataset
 from utils.preprocess_Freebase import FreebaseDataset
 from utils.preprocess_Yelp import YelpDataset
 from utils.preprocess_PubMed import PubMedDataset
@@ -50,6 +51,12 @@ heterogeneous_dataset = {
     "heco_freebase": {
         "name": FreebaseHeCoDataset,
     },
+    "heco_aminer": {
+        "name": AMinerHeCoDataset,
+    },
+    "imdb": {
+        "name": IMDbDataset,
+    },
     "PubMed": {
         "name": PubMedDataset,
     },
@@ -59,10 +66,6 @@ heterogeneous_dataset = {
     "Freebase": {
         "name": FreebaseDataset,
     },
-    # "heco_aminer": {
-    #     "name": AMinerHeCoDataset,
-    #     "relations": [("paper", "pa", "author"), ("paper", "pr", "reference")],
-    # },
 }
 
 

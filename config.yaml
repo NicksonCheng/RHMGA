@@ -1,3 +1,29 @@
+imdb:
+  dataset: "imdb"
+  epoches: 500
+  batch_size: 512
+  eva_interval: 10
+  eva_epoches: 100
+  num_layer: 3
+  num_heads: 8
+  num_out_heads: 1
+  num_hidden: 128
+  lr: 0.001
+  mask_rate: 0.3
+  dropout: 0.4
+  encoder: "SRN"
+  decoder: "SRN"
+  weight_decay: 0.0001
+  eva_lr: 0.01
+  eva_wd: 0.0001
+  gamma: 3
+  devices: 0
+  scheduler: True
+  edge_recons: True
+  feat_recons: True
+  all_feat_recons: True
+  all_edge_recons: True
+
 heco_acm:
   dataset: "heco_acm"
   epoches: 1000
@@ -44,8 +70,9 @@ heco_dblp:
   num_out_heads: 1
   scheduler: True
 
-heco_freebase:
-  dataset: "heco_freebase"
+
+heco_aminer:
+  dataset: "heco_aminer"
   epoches: 500
   batch_size: 512
   eva_interval: 10
@@ -53,7 +80,34 @@ heco_freebase:
   num_layer: 3
   num_heads: 8
   num_out_heads: 1
-  num_hidden: 64
+  num_hidden: 128
+  lr: 0.001
+  mask_rate: 0.4
+  dropout: 0.4
+  encoder: "SRN"
+  decoder: "SRN"
+  weight_decay: 0.0001
+  eva_lr: 0.01
+  eva_wd: 0.0001
+  gamma: 3
+  devices: 0
+  scheduler: True
+  edge_recons: True
+  feat_recons: True
+  all_feat_recons: True
+  all_edge_recons: True
+
+
+heco_freebase:
+  dataset: "heco_freebase"
+  epoches: 500
+  batch_size: 512
+  eva_interval: 10
+  eva_epoches: 100
+  num_layer: 3
+  num_heads: 8
+  num_out_heads: 1
+  num_hidden: 128
   lr: 0.001
   mask_rate: 0.4
   dropout: 0.4

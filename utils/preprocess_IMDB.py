@@ -53,7 +53,8 @@ class IMDbDataset(DGLDataset):
     _url = "https://raw.githubusercontent.com/Jhy1993/HAN/master/data/imdb/movie_metadata.csv"
     _seed = 42
 
-    def __init__(self):
+    def __init__(self, reverse_edge):
+        self._relaitons = [("movie", "ma", "actor"), ("actor", "am", "movie"), ("movie", "md", "director"), ("director", "dm", "movie")]
         super().__init__("imdb", self._url)
 
     def download(self):
@@ -62,15 +63,12 @@ class IMDbDataset(DGLDataset):
             download(self.url, path=file_path)
 
     def save(self):
-        # save_graphs(
-        #     os.path.join(self.save_path, self.name + "_dgl_graph.bin"), [self.g]
-        # )
+        save_graphs(os.path.join(self.save_path, self.name + "_dgl_graph.bin"), [self.g])
         pass
 
     def load(self):
-        graphs, _ = load_graphs(
-            os.path.join(self.save_path, self.name + "_dgl_graph.bin")
-        )
+
+        graphs, _ = load_graphs(os.path.join(self.save_path, self.name + "_dgl_graph.bin"))
         self.g = graphs[0]
         for k in ("train_mask", "val_mask", "test_mask"):
             self.g.nodes["movie"].data[k] = self.g.nodes["movie"].data[k].bool()
@@ -85,14 +83,7 @@ class IMDbDataset(DGLDataset):
         self.movies = list(sorted(m.strip() for m in self.data["movie_title"]))
         self.directors = list(sorted(set(self.data["director_name"])))
         self.actors = list(
-            sorted(
-                set(
-                    itertools.chain.from_iterable(
-                        self.data[c].dropna().to_list()
-                        for c in ("actor_1_name", "actor_2_name", "actor_3_name")
-                    )
-                )
-            )
+            sorted(set(itertools.chain.from_iterable(self.data[c].dropna().to_list() for c in ("actor_1_name", "actor_2_name", "actor_3_name"))))
         )
         self.g = self._build_graph()
         self._add_ndata()
@@ -149,24 +140,16 @@ class IMDbDataset(DGLDataset):
         :param random_state: int, optional 随机数种子
         :return: (train, val, test) 类型与samples相同
         """
-        train, val = train_test_split(
-            samples, train_size=train_size, random_state=random_state
-        )
+        train, val = train_test_split(samples, train_size=train_size, random_state=random_state)
         if isinstance(val_size, float):
             val_size *= len(samples) / len(val)
-        val, test = train_test_split(
-            val, train_size=val_size, random_state=random_state
-        )
+        val, test = train_test_split(val, train_size=val_size, random_state=random_state)
         return train, val, test
 
     def _add_ndata(self):
         vectorizer = CountVectorizer(min_df=5)
-        features = vectorizer.fit_transform(
-            self.data["plot_keywords"].fillna("").values
-        )
-        self.g.nodes["movie"].data["feat"] = torch.from_numpy(
-            features.toarray()
-        ).float()
+        features = vectorizer.fit_transform(self.data["plot_keywords"].fillna("").values)
+        self.g.nodes["movie"].data["feat"] = torch.from_numpy(features.toarray()).float()
         self.g.nodes["movie"].data["label"] = torch.from_numpy(self.labels).long()
 
         # actor和director顶点的特征为其关联的movie顶点特征的平均
@@ -179,23 +162,13 @@ class IMDbDataset(DGLDataset):
         )
 
         n_movies = len(self.movies)
-        train_idx, val_idx, test_idx = self.split_idx(
-            np.arange(n_movies), 400, 400, self._seed
-        )
-        self.g.nodes["movie"].data["train_mask"] = generate_mask_tensor(
-            idx2mask(train_idx, n_movies)
-        )
-        self.g.nodes["movie"].data["val_mask"] = generate_mask_tensor(
-            idx2mask(val_idx, n_movies)
-        )
-        self.g.nodes["movie"].data["test_mask"] = generate_mask_tensor(
-            idx2mask(test_idx, n_movies)
-        )
+        train_idx, val_idx, test_idx = self.split_idx(np.arange(n_movies), 400, 400, self._seed)
+        self.g.nodes["movie"].data["train"] = generate_mask_tensor(idx2mask(train_idx, n_movies))
+        self.g.nodes["movie"].data["val"] = generate_mask_tensor(idx2mask(val_idx, n_movies))
+        self.g.nodes["movie"].data["test"] = generate_mask_tensor(idx2mask(test_idx, n_movies))
 
     def has_cache(self):
-        return os.path.exists(
-            os.path.join(self.save_path, self.name + "_dgl_graph.bin")
-        )
+        return os.path.exists(os.path.join(self.save_path, self.name + "_dgl_graph.bin"))
 
     def __getitem__(self, idx):
         if idx != 0:
@@ -221,6 +194,18 @@ class IMDbDataset(DGLDataset):
     def _ntypes(self):
 
         return {"m": "movie", "a": "actor", "d": "director"}
+
+    @property
+    def has_label_ratio(self):
+        return False
+
+    @property
+    def multilabel(self):
+        return False
+
+    @property
+    def relations(self):
+        return self._relaitons
 
 
 class IMDb5kDataset(DGLDataset):
@@ -251,17 +236,13 @@ class IMDb5kDataset(DGLDataset):
     def download(self):
         file_path = os.path.join(self.raw_dir, "imdb5k.mat")
         if not os.path.exists(file_path):
-            raise FileNotFoundError(
-                "请手动下载文件 {} 提取码：qkec 并保存为 {}".format(self.url, file_path)
-            )
+            raise FileNotFoundError("请手动下载文件 {} 提取码：qkec 并保存为 {}".format(self.url, file_path))
 
     def save(self):
         save_graphs(os.path.join(self.save_path, self.name + "_dgl_graph.bin"), self.gs)
 
     def load(self):
-        self.gs, _ = load_graphs(
-            os.path.join(self.save_path, self.name + "_dgl_graph.bin")
-        )
+        self.gs, _ = load_graphs(os.path.join(self.save_path, self.name + "_dgl_graph.bin"))
         for g in self.gs:
             for k in ("train_mask", "val_mask", "test_mask"):
                 g.ndata[k] = g.ndata[k].bool()
@@ -289,9 +270,7 @@ class IMDb5kDataset(DGLDataset):
             g.ndata["test_mask"] = test_mask
 
     def has_cache(self):
-        return os.path.exists(
-            os.path.join(self.save_path, self.name + "_dgl_graph.bin")
-        )
+        return os.path.exists(os.path.join(self.save_path, self.name + "_dgl_graph.bin"))
 
     def __getitem__(self, idx):
         if idx != 0:

@@ -42,14 +42,6 @@ class HeCoDataset(DGLDataset):
     def __init__(self, reverse_edge, name, ntypes):
         url = "https://api.github.com/repos/liun-online/HeCo/zipball/main"
         self._ntypes = {ntype[0]: ntype for ntype in ntypes}
-        self._relations = [
-            ("author", "author-movie", "movie"),
-            ("director", "director-movie", "movie"),
-            ("writer", "writer-movie", "movie"),
-            ("movie", "movie-author", "author"),
-            ("movie", "movie-director", "director"),
-            ("movie", "movie-writer", "writer"),
-        ]
         self._label_ratio = ["20", "40", "60"]
         super().__init__(name + "-heco", url)
 
@@ -284,7 +276,16 @@ class FreebaseHeCoDataset(HeCoDataset):
     """
 
     def __init__(self, reverse_edge):
+        self._relations = [
+            ("author", "author-movie", "movie"),
+            ("director", "director-movie", "movie"),
+            ("writer", "writer-movie", "movie"),
+            ("movie", "movie-author", "author"),
+            ("movie", "movie-director", "director"),
+            ("movie", "movie-writer", "writer"),
+        ]
         super().__init__(reverse_edge, "freebase", ["movie", "author", "director", "writer"])
+        
 
     def _read_feats(self):
         feats = {}
@@ -325,9 +326,21 @@ class AMinerHeCoDataset(HeCoDataset):
     * train_mask, val_mask, test_mask: tensor(N_paper)
     """
 
-    def __init__(self):
-        super().__init__("aminer", ["paper", "author", "reference"])
+    def __init__(self,reverse_edge):
+        self._relations=[
+            ("paper", "paper-author", "author"),
+            ("paper", "paper-reference", "reference"),
+            ("author", "author-paper", "paper"),
+            ("reference", "reference-paper", "paper"),
+        ]
+        super().__init__(reverse_edge,"aminer", ["paper", "author", "reference"])
+    def _read_feats(self):
 
+        feats = {}
+        for t in self._ntypes.values():
+            num_t = self.g.num_nodes(t)
+            feats[t] = torch.from_numpy(sp.eye(num_t).toarray()).float()
+        return feats
     @property
     def metapaths(self):
         return [["pa", "ap"], ["pr", "rp"]]
@@ -335,3 +348,6 @@ class AMinerHeCoDataset(HeCoDataset):
     @property
     def predict_ntype(self):
         return "paper"
+    @property
+    def relations(self):
+        return self._relations
