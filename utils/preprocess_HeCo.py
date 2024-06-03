@@ -285,9 +285,9 @@ class FreebaseHeCoDataset(HeCoDataset):
             ("movie", "movie-writer", "writer"),
         ]
         super().__init__(reverse_edge, "freebase", ["movie", "author", "director", "writer"])
-        
 
     def _read_feats(self):
+
         feats = {}
         for t in self._ntypes.values():
             num_t = self.g.num_nodes(t)
@@ -326,14 +326,15 @@ class AMinerHeCoDataset(HeCoDataset):
     * train_mask, val_mask, test_mask: tensor(N_paper)
     """
 
-    def __init__(self,reverse_edge):
-        self._relations=[
+    def __init__(self, reverse_edge):
+        self._relations = [
             ("paper", "paper-author", "author"),
             ("paper", "paper-reference", "reference"),
             ("author", "author-paper", "paper"),
             ("reference", "reference-paper", "paper"),
         ]
-        super().__init__(reverse_edge,"aminer", ["paper", "author", "reference"])
+        super().__init__(reverse_edge, "aminer", ["paper", "author", "reference"])
+
     def _read_feats(self):
 
         feats = {}
@@ -341,6 +342,7 @@ class AMinerHeCoDataset(HeCoDataset):
             num_t = self.g.num_nodes(t)
             feats[t] = torch.from_numpy(sp.eye(num_t).toarray()).float()
         return feats
+
     @property
     def metapaths(self):
         return [["pa", "ap"], ["pr", "rp"]]
@@ -348,6 +350,7 @@ class AMinerHeCoDataset(HeCoDataset):
     @property
     def predict_ntype(self):
         return "paper"
+
     @property
     def relations(self):
         return self._relations

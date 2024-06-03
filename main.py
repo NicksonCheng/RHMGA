@@ -80,7 +80,6 @@ def train(args):
     start_t = time.time()
     relations = data.relations
     graph = data[0].to(device_0)
-
     all_types = list(data._ntypes.values())
     target_type = data.predict_ntype
     target_type_labels = graph.nodes[target_type].data["label"]
@@ -99,7 +98,7 @@ def train(args):
             masked_graph[split] = graph.nodes[target_type].data[split]
 
     # sampler = MultiLayerFullNeighborSampler(2)
-    sampler = MultiLayerNeighborSampler([10, 5])
+    sampler = MultiLayerNeighborSampler([5, 10, 15])
     dataloader = DataLoader(
         graph,
         train_nids,
@@ -123,7 +122,13 @@ def train(args):
     #         model, device_ids=[args.devices], output_device=args.devices
     #     )
     model = model.to(device_0)
+    # Define learnable weights for the loss components
+    raw_weights = nn.Parameter(torch.tensor([0.5, 0.5], requires_grad=True))
+
     optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+
+    # optimizer = optim.Adam(list(model.parameters()) + [raw_weights], lr=args.lr, weight_decay=args.weight_decay)
+
     if args.scheduler:
         # scheduler = torch.optim.lr_scheduler.ExponentialLR(
         #     optimizer, gamma=0.99)
@@ -139,18 +144,26 @@ def train(args):
     total_loss = []
     print("Modeling Time taken:", time.time() - start_t, "seconds")
     log_times = datetime.now().strftime("[%Y-%m-%d_%H:%M:%S]")
+    file_name = name_file(args, "log", log_times)
+    with open(file_name, "a") as log_file:
+        log_file.write(str(args))
+
     for epoch in tqdm(range(args.epoches), total=args.epoches, desc=colorize("Epoch Training", "blue")):
         model.train()
         train_loss = 0.0
         for i, mini_batch in enumerate(dataloader):
             src_nodes, dst_nodes, subgs = mini_batch
-
             # print("----------------------------------")
             # for rels_tuple in relations:
             #     print(f"{rels_tuple}: {subgs[1].num_edges(rels_tuple)}")
             # print("----------------------------------")
 
-            loss = model(subgs, relations)
+            feat_loss, adj_loss = model(subgs, relations)
+            # weight = torch.softmax(raw_weights, dim=0)
+            # edge_weight, feat_weight = weight[0], weight[1]
+            feat_weight = 0.4
+            edge_weight = 0.6
+            loss = feat_weight * feat_loss + edge_weight * adj_loss
             train_loss += loss.item()
             optimizer.zero_grad()
 
@@ -163,6 +176,7 @@ def train(args):
         total_loss.append(avg_train_loss)
         ## Evaluate Embedding Performance
         if epoch > 0 and ((epoch + 1) % args.eva_interval) == 0:
+            # print(f"feat weight{feat_weight.item()} edge weight{edge_weight.item()}")
             # if True:
             file_name = name_file(args, "log", log_times)
             with open(file_name, "a") as log_file:
@@ -171,11 +185,12 @@ def train(args):
 
                 rels_subgraphs = model.seperate_relation_graph(graph, relations, target_type)
                 enc_feat = model.encoder(
-                    rels_subgraphs,
+                    graph,
+                    1,
+                    relations,
                     target_type,
                     features[target_type],
-                    features,
-                    "encoder",
+                    "evaluation",
                 )
                 if data.has_label_ratio:
                     for ratio in data.label_ratio:
@@ -213,9 +228,7 @@ def train(args):
                             max_macro,
                         )
                     )
-    file_name = name_file(args, "log", log_times)
-    with open(file_name, "a") as log_file:
-        log_file.write(str(args))
+
     ####
     ## plot the performance
     ####

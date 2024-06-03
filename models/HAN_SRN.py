@@ -85,9 +85,7 @@ class HANLayer(nn.Module):
         self.semantic_attention = SemanticAttention(in_dim=out_dim * num_heads)
 
     def forward(self, subgraphs, h):
-        z_m = [
-            gat(s_g, h).flatten(start_dim=1) for gat, s_g in zip(self.gats, subgraphs)
-        ]  # N * K*d_out for each metapath
+        z_m = [gat(s_g, h).flatten(start_dim=1) for gat, s_g in zip(self.gats, subgraphs)]  # N * K*d_out for each metapath
         z_m = torch.stack(z_m, dim=1)  # N * M * K*d_out (4057,3,128)
         z = self.semantic_attention(z_m)  # N * K*d_iyt (4057, 128)
 
@@ -107,12 +105,12 @@ class Metapath_Relation_Network(nn.Module):
         num_out_heads,
         dropout,
         weight_T,
-        enc_dec,
+        status,
     ):
         super(Metapath_Relation_Network, self).__init__()
 
         self.weight_T = weight_T
-        if enc_dec == "encoder":
+        if status == "encoder":
             self.han_out_dim = out_dim // num_heads
         else:
             self.han_out_dim = out_dim
@@ -168,10 +166,10 @@ class Metapath_Relation_Network(nn.Module):
                 )
             )
 
-    def forward(self, mp_subgraphs, rels_subgraphs, dst_feat, feats, enc_dec="encoder"):
+    def forward(self, mp_subgraphs, rels_subgraphs, dst_feat, feats, status="encoder"):
         ### SRN Module
         # Linear Transformation to same dimension
-        if enc_dec == "encoder":
+        if status == "encoder":
             dst_feat = self.weight_T[0](dst_feat)
 
         z_r = []

@@ -103,16 +103,16 @@ heco_freebase:
   epoches: 500
   batch_size: 512
   eva_interval: 10
-  eva_epoches: 100
+  eva_epoches: 50
   num_layer: 3
   num_heads: 8
   num_out_heads: 1
-  num_hidden: 128
+  num_hidden: 64
   lr: 0.001
   mask_rate: 0.4
   dropout: 0.4
-  encoder: "SRN"
-  decoder: "SRN"
+  encoder: "HGraphSAGE"
+  decoder: "HGraphSAGE"
   weight_decay: 0.0001
   eva_lr: 0.01
   eva_wd: 0.0001

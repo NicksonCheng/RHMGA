@@ -79,7 +79,7 @@ class Schema_Relation_Network(nn.Module):
         num_layer,
         dropout,
         weight_T,
-        enc_dec,
+        status,
     ):
         super(Schema_Relation_Network, self).__init__()
         self.hidden_dim = hidden_dim
@@ -104,7 +104,7 @@ class Schema_Relation_Network(nn.Module):
         self.semantic_attention = SemanticAttention(in_dim=hidden_dim)
 
         ## out_dim has different type of nodes
-        if enc_dec == "decoder":
+        if status == "decoder":
             self.ntypes_decoder_trans = nn.ModuleDict({ntype: nn.Linear(hidden_dim, out_dim) for ntype, out_dim in ntype_out_dim.items()})
 
     def forward(
@@ -113,10 +113,10 @@ class Schema_Relation_Network(nn.Module):
         dst_ntype,
         dst_feat,
         src_feat,
-        enc_dec="encoder",
+        status="encoder",
     ):
         ## Linear Transformation to same dimension
-        if enc_dec == "encoder":
+        if status == "encoder":
             dst_feat = self.weight_T[dst_ntype](dst_feat)
         neighbors_feat = {ntype: self.weight_T[ntype](feat) for ntype, feat in src_feat.items()}
         ## aggregate the neighbor based on the relation
@@ -131,6 +131,6 @@ class Schema_Relation_Network(nn.Module):
         z_r = torch.stack(list(z_r.values()), dim=1)
         z = self.semantic_attention(z_r)
 
-        if enc_dec == "decoder":
+        if status == "decoder":
             z = self.ntypes_decoder_trans[dst_ntype](z)
         return z
