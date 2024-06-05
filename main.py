@@ -10,6 +10,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
+from dgl.nn.pytorch import MetaPath2Vec
 import numpy as np
 import matplotlib.pyplot as plt
 from dgl.dataloading import DataLoader, MultiLayerFullNeighborSampler, MultiLayerNeighborSampler
@@ -25,7 +26,7 @@ from utils.preprocess_IMDB import IMDbDataset
 from utils.preprocess_Freebase import FreebaseDataset
 from utils.preprocess_Yelp import YelpDataset
 from utils.preprocess_PubMed import PubMedDataset
-from utils.evaluate import score, LogisticRegression, MLP, node_classification_evaluate
+from utils.evaluate import score, node_classification_evaluate, metapath2vec_train
 from utils.utils import load_config, colorize, name_file
 from models.HGARME import HGARME
 from models.HAN import HAN
@@ -48,6 +49,9 @@ heterogeneous_dataset = {
     #         ("paper", "pa", "author"),
     #     ],
     # },
+    "heco_dblp": {
+        "name": DBLPHeCoDataset,
+    },
     "heco_freebase": {
         "name": FreebaseHeCoDataset,
     },
@@ -74,7 +78,6 @@ def train(args):
     # torch.cuda.set_device()
     device_0 = torch.device(f"cuda:{args.devices}" if torch.cuda.is_available() else "cpu")
     device_1 = torch.device(f"cuda:{args.devices}" if torch.cuda.is_available() else "cpu")
-
     data = heterogeneous_dataset[args.dataset]["name"](args.reverse_edge)
     print("Preprocessing Time taken:", time.time() - start_t, "seconds")
     start_t = time.time()
@@ -83,22 +86,43 @@ def train(args):
     all_types = list(data._ntypes.values())
     target_type = data.predict_ntype
     target_type_labels = graph.nodes[target_type].data["label"]
+
+    if args.mp2vec_feat:
+        ## add metapath2vec feature
+        metapath = ["movie-author", "author-movie", "movie-director", "director-movie", "movie-writer", "writer-movie"]
+
+        metapath_model = MetaPath2Vec(graph, metapath, 4, args.num_hidden, 3, True)
+        metapath2vec_train(args, graph, target_type, metapath_model, 50, device_0)
+
+        user_nids = torch.LongTensor(metapath_model.local_to_global_nid[target_type]).to(device_0)
+        mp2vec_emb = metapath_model.node_embed(user_nids).detach()
+
+        original_feat = graph.nodes[target_type].data["feat"]
+        graph.nodes[target_type].data["feat"] = mp2vec_emb
+
+        graph.nodes[target_type].data["feat"] = torch.hstack([original_feat, mp2vec_emb])
+        ## free memory
+        del metapath_model
+        torch.cuda.empty_cache()
+
     num_classes = data.num_classes
     features = {t: graph.nodes[t].data["feat"].to(device_0) for t in all_types if "feat" in graph.nodes[t].data}
     train_nids = {ntype: torch.arange(graph.num_nodes(ntype)).to(device_0) for ntype in all_types}
 
     masked_graph = {}
+
     if data.has_label_ratio:
         for ratio in data.label_ratio:
             masked_graph[ratio] = {}
             for split in ["train", "val", "test"]:
                 masked_graph[ratio][split] = graph.nodes[target_type].data[f"{split}_{ratio}"]
     else:
+
         for split in ["train", "val", "test"]:
             masked_graph[split] = graph.nodes[target_type].data[split]
-
+    # print(features)
     # sampler = MultiLayerFullNeighborSampler(2)
-    sampler = MultiLayerNeighborSampler([5, 10, 15])
+    sampler = MultiLayerNeighborSampler([3, 6, 9])
     dataloader = DataLoader(
         graph,
         train_nids,
@@ -142,7 +166,6 @@ def train(args):
 
     performance = {}
     total_loss = []
-    print("Modeling Time taken:", time.time() - start_t, "seconds")
     log_times = datetime.now().strftime("[%Y-%m-%d_%H:%M:%S]")
     file_name = name_file(args, "log", log_times)
     with open(file_name, "a") as log_file:
@@ -158,11 +181,11 @@ def train(args):
             #     print(f"{rels_tuple}: {subgs[1].num_edges(rels_tuple)}")
             # print("----------------------------------")
 
-            feat_loss, adj_loss = model(subgs, relations)
+            feat_loss, adj_loss = model(subgs, relations, epoch)
             # weight = torch.softmax(raw_weights, dim=0)
             # edge_weight, feat_weight = weight[0], weight[1]
-            feat_weight = 0.4
-            edge_weight = 0.6
+            feat_weight = 0.5
+            edge_weight = 0.5
             loss = feat_weight * feat_loss + edge_weight * adj_loss
             train_loss += loss.item()
             optimizer.zero_grad()
@@ -183,8 +206,7 @@ def train(args):
 
                 log_file.write(f"Epoches:{epoch}-----------------------------------\n")
 
-                rels_subgraphs = model.seperate_relation_graph(graph, relations, target_type)
-                enc_feat = model.encoder(
+                enc_feat, att_mp = model.encoder(
                     graph,
                     1,
                     relations,
@@ -273,7 +295,8 @@ if __name__ == "__main__":
     parser.add_argument("--num_out_heads", type=int, default=1, help="number of attention output heads")
     parser.add_argument("--num_hidden", type=int, default=256, help="number of hidden units")
     parser.add_argument("--lr", type=float, default=0.001, help="learning rate")
-    parser.add_argument("--mask_rate", type=float, default=0.5, help="mask rate")
+    parser.add_argument("--mask_rate", type=float, default=0.4, help="mask rate")
+    parser.add_argument("--dynamic_mask_rate", type=str, default="0.5,0.005,0.8", help="dynamic mask rate")
     parser.add_argument("--dropout", type=float, default=0.4, help="dropout probability")
     parser.add_argument("--encoder", type=str, default="HAN", help="heterogeneous encoder")
     parser.add_argument("--decoder", type=str, default="HAN", help="Heterogeneous decoder")
@@ -289,6 +312,7 @@ if __name__ == "__main__":
     parser.add_argument("--all_edge_recons", default=True, help="use all type node edge reconstruction")
     parser.add_argument("--use_config", default=True, help="use best parameter in config.yaml ")
     parser.add_argument("--reverse_edge", default=True, help="add reverse edge or not")
+    parser.add_argument("--mp2vec_feat", default=True, help="add reverse edge or not")
     known_args, unknow_args = parser.parse_known_args()
 
     cmd_args = [arg.lstrip("-") for arg in sys.argv[1:] if arg.startswith("--")]

@@ -194,7 +194,9 @@ class FreebaseDataset(DGLDataset):
             self.graph.nodes[self.predict_ntype].data["label"][mapped_node_id] = torch.tensor([node_label])
             label_nodes_indices.append(mapped_node_id)
         self._num_classes = self.graph.nodes[self.predict_ntype].data["label"].max().item() + 1
-
+        print(self.graph.nodes[self.predict_ntype].data["label"])
+        print(torch.bincount(self.graph.nodes[self.predict_ntype].data["label"]))
+        exit()
         ## split label node into train valid test
 
         ## self-define split ratio

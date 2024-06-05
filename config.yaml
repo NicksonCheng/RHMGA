@@ -49,26 +49,30 @@ heco_acm:
 
 heco_dblp:
   dataset: "heco_dblp"
-  epoches: 1000
+  epoches: 500
+  batch_size: 1024
+  eva_interval: 10
   eva_epoches: 50
-  num_layer: 2
-  num_heads: 8
+  num_layer: 1
+  num_heads: 4
   num_out_heads: 1
   num_hidden: 256
   lr: 0.001
-  mask_rate: 0.5
+  mask_rate: 0.4
   dropout: 0.4
-  encoder: "SRN"
-  decoder: "HAN"
+  encoder: "HGraphSAGE"
+  decoder: "HGraphSAGE"
   weight_decay: 0.0001
   eva_lr: 0.01
   eva_wd: 0.0001
   gamma: 3
   devices: 0
-  num_layer: 3
-  num_heads: 8
-  num_out_heads: 1
   scheduler: True
+  edge_recons: True
+  feat_recons: True
+  all_feat_recons: True
+  all_edge_recons: True
+  mp2vec_feat: False
 
 
 heco_aminer:
@@ -84,8 +88,8 @@ heco_aminer:
   lr: 0.001
   mask_rate: 0.4
   dropout: 0.4
-  encoder: "SRN"
-  decoder: "SRN"
+  encoder: "HGraphSAGE"
+  decoder: "HGraphSAGE"
   weight_decay: 0.0001
   eva_lr: 0.01
   eva_wd: 0.0001
@@ -96,6 +100,7 @@ heco_aminer:
   feat_recons: True
   all_feat_recons: True
   all_edge_recons: True
+  mp2vec_feat: False
 
 
 heco_freebase:
@@ -104,7 +109,7 @@ heco_freebase:
   batch_size: 512
   eva_interval: 10
   eva_epoches: 50
-  num_layer: 3
+  num_layer: 1
   num_heads: 8
   num_out_heads: 1
   num_hidden: 64
@@ -123,7 +128,7 @@ heco_freebase:
   feat_recons: True
   all_feat_recons: True
   all_edge_recons: True
-
+  mp2vec_feat: False
 
 PubMed:
   dataset: "PubMed"
@@ -150,6 +155,7 @@ PubMed:
   feat_recons: True
   all_feat_recons: True
   all_edge_recons: True
+  mp2vec_feat: False
 
 Yelp:
   dataset: "Yelp"
@@ -176,6 +182,7 @@ Yelp:
   feat_recons: True
   all_feat_recons: True
   all_edge_recons: True
+  mp2vec_feat: True
 
 Freebase:
   dataset: "Freebase"
@@ -190,8 +197,8 @@ Freebase:
   lr: 0.001
   mask_rate: 0.5
   dropout: 0.4
-  encoder: "SRN"
-  decoder: "SRN"
+  encoder: "HGraphSAGE"
+  decoder: "HGraphSAGE"
   weight_decay: 0.0001
   eva_lr: 0.01
   eva_wd: 0.0001
@@ -202,5 +209,6 @@ Freebase:
   feat_recons: True
   all_feat_recons: True
   all_edge_recons: True
+  mp2vec_feat: False
 
 

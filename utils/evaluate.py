@@ -5,16 +5,27 @@ import torch.optim as optim
 from sklearn.metrics import f1_score, mean_squared_error, roc_auc_score
 from tqdm import tqdm
 from utils.utils import colorize
+from torch.optim import SparseAdam
+from torch.utils.data import DataLoader
 
 
-class LogisticRegression(nn.Module):
-    def __init__(self, num_dim, num_classes):
-        super().__init__()
-        self.linear = nn.Linear(num_dim, num_classes)
+class LogReg(nn.Module):
+    def __init__(self, ft_in, nb_classes):
+        super(LogReg, self).__init__()
+        self.fc = nn.Linear(ft_in, nb_classes)
 
-    def forward(self, x):
-        logits = self.linear(x)
-        return logits
+        for m in self.modules():
+            self.weights_init(m)
+
+    def weights_init(self, m):
+        if isinstance(m, nn.Linear):
+            torch.nn.init.xavier_uniform_(m.weight.data)
+            if m.bias is not None:
+                m.bias.data.fill_(0.0)
+
+    def forward(self, seq):
+        ret = self.fc(seq)
+        return ret
 
 
 # MLP Model
@@ -68,8 +79,31 @@ def cosine_similarity(x, y, gamma):
     return cos_sim
 
 
+def metapath2vec_train(args, graph, target_type, model, epoch, device):
+    for e in tqdm(range(epoch), desc="Metapath2vec Training"):
+        # Use the source node type of etype 'uc'
+        dataloader = DataLoader(torch.arange(graph.num_nodes(target_type)), batch_size=128, shuffle=True, collate_fn=model.sample)
+        optimizer = SparseAdam(model.parameters(), lr=0.025)
+        model.to(device)
+        model.train()
+
+        total_loss = 0
+        for pos_u, pos_v, neg_v in dataloader:
+            pos_u = pos_u.to(device)
+            pos_v = pos_v.to(device)
+            neg_v = neg_v.to(device)
+            loss = model(pos_u, pos_v, neg_v)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            total_loss += loss.item()
+    return model
+
+
 def node_classification_evaluate(device, enc_feat, args, num_classes, labels, masked_graph, multilabel):
     classifier = MLP(num_dim=args.num_hidden, num_classes=num_classes)
+    # classifier = LogReg(ft_in=args.num_hidden, nb_classes=num_classes)
     classifier = classifier.to(device)
     optimizer = optim.Adam(classifier.parameters(), lr=args.eva_lr, weight_decay=args.eva_wd)
 
@@ -119,6 +153,5 @@ def node_classification_evaluate(device, enc_feat, args, num_classes, labels, ma
     classifier.load_state_dict(best_model_state_dict)
     test_output = classifier(multilabel, emb["test"]).cpu()
     test_acc, test_micro_f1, test_macro_f1 = score(test_output, labels["test"], multilabel)
-
     return test_acc, test_micro_f1, test_macro_f1
     # return max(val_accuracy), max(val_micro), max(val_macro)

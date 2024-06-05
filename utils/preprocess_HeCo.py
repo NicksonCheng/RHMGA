@@ -238,8 +238,16 @@ class DBLPHeCoDataset(HeCoDataset):
     * feat: tensor(7723, 50)
     """
 
-    def __init__(self):
-        super().__init__("dblp", ["author", "paper", "conference", "term"])
+    def __init__(self, reverse_edge):
+        self._relations = [
+            ("author", "author-paper", "paper"),
+            ("conference", "conference-paper", "paper"),
+            ("term", "term-paper", "paper"),
+            ("paper", "paper-author", "author"),
+            ("paper", "paper-conference", "conference"),
+            ("paper", "paper-term", "term"),
+        ]
+        super().__init__(reverse_edge, "dblp", ["author", "paper", "conference", "term"])
 
     def _read_feats(self):
         feats = {}
@@ -254,6 +262,10 @@ class DBLPHeCoDataset(HeCoDataset):
         return [["ap", "pa"], ["ap", "pc", "cp", "pa"], ["ap", "pt", "tp", "pa"]]
 
     @property
+    def relations(self):
+        return self._relations
+
+    @property
     def predict_ntype(self):
         return "author"
 
@@ -266,7 +278,7 @@ class FreebaseHeCoDataset(HeCoDataset):
     * 顶点：3492 movie, 33401 author, 2502 director, 4459 writer
     * 边：65341 movie-author, 3762 movie-director, 6414 movie-writer
     * 目标顶点类型：movie
-    * 类别数：3
+    * 类别数：3 [1327,  618, 1547]
     * 顶点划分：60 train, 1000 valid, 1000 test
 
     movie顶点特征
