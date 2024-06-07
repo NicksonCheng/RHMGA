@@ -13,7 +13,8 @@ import torch.nn.functional as F
 from dgl.nn.pytorch import MetaPath2Vec
 import numpy as np
 import matplotlib.pyplot as plt
-from dgl.dataloading import DataLoader, MultiLayerFullNeighborSampler, MultiLayerNeighborSampler
+#from dgl.dataloading import DataLoader, MultiLayerFullNeighborSampler, MultiLayerNeighborSampler
+from torch_geometric.loader import DataLoader
 from utils.preprocess_DBLP import DBLP4057Dataset, DBLPFourAreaDataset
 from utils.preprocess_ACM import ACMDataset
 from utils.preprocess_HeCo import (
@@ -73,6 +74,20 @@ heterogeneous_dataset = {
 }
 
 
+def extract_edge_interactions(original_graph):
+    # Create a dictionary to store the edges of each relation type
+    edge_dict = {}
+
+    for etype in original_graph.canonical_etypes:
+        u, v = original_graph.edges(etype=etype)
+        edge_dict[etype] = (u, v)
+
+    # Create a new heterogeneous graph with the extracted edges
+    new_graph = dgl.heterograph(edge_dict)
+
+    return new_graph
+
+
 def train(args):
     start_t = time.time()
     # torch.cuda.set_device()
@@ -83,10 +98,10 @@ def train(args):
     start_t = time.time()
     relations = data.relations
     graph = data[0].to(device_0)
+
     all_types = list(data._ntypes.values())
     target_type = data.predict_ntype
     target_type_labels = graph.nodes[target_type].data["label"]
-
     if args.mp2vec_feat:
         ## add metapath2vec feature
         metapath = ["movie-author", "author-movie", "movie-director", "director-movie", "movie-writer", "writer-movie"]
@@ -122,16 +137,22 @@ def train(args):
             masked_graph[split] = graph.nodes[target_type].data[split]
     # print(features)
     # sampler = MultiLayerFullNeighborSampler(2)
-    sampler = MultiLayerNeighborSampler([3, 6, 9])
-    dataloader = DataLoader(
-        graph,
-        train_nids,
-        sampler,
-        batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=0,
-        use_uva=False,
-    )
+    #sampler = MultiLayerNeighborSampler([3, 6, 9])
+    # dataloader = DataLoader(
+    #     graph,
+    #     train_nids,
+    #     sampler,
+    #     batch_size=args.batch_size,
+    #     shuffle=True,
+    #     num_workers=0,
+    #     use_uva=False,
+    # )
+    dataloader=DataLoader(graph, batch_size=args.batch_size, shuffle=True)
+    for batch in dataloader:
+        print(batch.x_dict)
+        print(batch.edge_index_dict)
+        break
+    exit()
     model = HGARME(
         relations=relations,
         target_type=target_type,
@@ -170,33 +191,26 @@ def train(args):
     file_name = name_file(args, "log", log_times)
     with open(file_name, "a") as log_file:
         log_file.write(str(args))
-
+    graph = extract_edge_interactions(graph)
     for epoch in tqdm(range(args.epoches), total=args.epoches, desc=colorize("Epoch Training", "blue")):
         model.train()
         train_loss = 0.0
-        for i, mini_batch in enumerate(dataloader):
-            src_nodes, dst_nodes, subgs = mini_batch
-            # print("----------------------------------")
-            # for rels_tuple in relations:
-            #     print(f"{rels_tuple}: {subgs[1].num_edges(rels_tuple)}")
-            # print("----------------------------------")
 
-            feat_loss, adj_loss = model(subgs, relations, epoch)
-            # weight = torch.softmax(raw_weights, dim=0)
-            # edge_weight, feat_weight = weight[0], weight[1]
-            feat_weight = 0.5
-            edge_weight = 0.5
-            loss = feat_weight * feat_loss + edge_weight * adj_loss
-            train_loss += loss.item()
-            optimizer.zero_grad()
+        feat_loss, adj_loss = model(graph, features, relations, epoch)
+        # weight = torch.softmax(raw_weights, dim=0)
+        # edge_weight, feat_weight = weight[0], weight[1]
+        feat_weight = 0.5
+        edge_weight = 0.5
+        loss = feat_weight * feat_loss + edge_weight * adj_loss
+        train_loss += loss.item()
+        optimizer.zero_grad()
 
-            loss.backward()
-            optimizer.step()
-            scheduler.step()
-            # print(f"Batch {i} Loss: {loss.item()}")
-        avg_train_loss = train_loss / len(dataloader)
-        print(f"Epoch:{epoch+1}/{args.epoches} Training Loss:{(avg_train_loss)} Learning_rate={scheduler.get_last_lr()}")
-        total_loss.append(avg_train_loss)
+        loss.backward()
+        optimizer.step()
+        scheduler.step()
+        # print(f"Batch {i} Loss: {loss.item()}")
+        print(f"Epoch:{epoch+1}/{args.epoches} Training Loss:{(train_loss)} Learning_rate={scheduler.get_last_lr()}")
+        total_loss.append(train_loss)
         ## Evaluate Embedding Performance
         if epoch > 0 and ((epoch + 1) % args.eva_interval) == 0:
             # print(f"feat weight{feat_weight.item()} edge weight{edge_weight.item()}")

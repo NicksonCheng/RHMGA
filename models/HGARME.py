@@ -8,8 +8,8 @@ from functools import partial
 from dgl.transforms import DropEdge
 from collections import Counter
 import traceback
-import datetime
-import dgl
+from datetime import datetime
+import time
 
 
 class MultiLayerPerception(nn.Module):
@@ -54,7 +54,7 @@ def module_selection(
         return Schema_Relation_Network(
             relations=relations,
             hidden_dim=hidden_dim,
-            ntype_out_dim=out_dim,
+            out_dim=out_dim,
             num_layer=num_layer,
             num_heads=num_heads,
             num_out_heads=num_out_heads,
@@ -65,8 +65,11 @@ def module_selection(
     elif module_type == "HGraphSAGE":
         return HGraphSAGE(
             relations=relations,
+            in_dim=in_dim,
             hidden_dim=hidden_dim,
-            ntype_out_dim=out_dim,
+            out_dim=out_dim,
+            num_heads=num_heads,
+            num_out_heads=num_out_heads,
             num_layer=num_layer,
             weight_T=weight_T,
             status=status,
@@ -97,38 +100,27 @@ class HGARME(nn.Module):
         self.all_feat_recons = args.all_feat_recons
         self.all_edge_recons = args.all_edge_recons
         # encoder/decoder hidden dimension
-        if self.encoder_type == "HAN":
+        if self.encoder_type == "HGraphSAGE":
             self.enc_dim = self.hidden_dim // self.num_heads
+            self.enc_heads = self.num_heads
         else:
             self.enc_dim = self.hidden_dim
-        self.enc_heads = self.num_heads
+            self.enc_heads = 1
 
-        self.dec_in_dim = self.hidden_dim  # enc_dim * enc_heads
-        if self.decoder_type == "HAN":
-            self.dec_hidden_dim = self.hidden_dim // self.num_heads
+        self.dec_in_dim = self.hidden_dim
+        if self.decoder_type == "HGraphSAGE":
+            self.dec_hidden_dim = self.hidden_dim // self.num_out_heads
+            self.dec_heads = self.num_out_heads
         else:
             self.dec_hidden_dim = self.hidden_dim
-        self.dec_heads = self.num_out_heads
+            self.dec_heads = self.num_out_heads
 
         ## project all type of node into same dimension
-        self.weight_T = nn.ModuleDict({t: nn.Linear(self.ntype_in_dim[t], self.hidden_dim) for t in self.all_types})
+        self.weight_T = nn.ModuleDict({t: nn.Linear(self.ntype_in_dim[t], self.enc_dim) for t in self.all_types})
         self.ntype_enc_mask_token = {t: nn.Parameter(torch.zeros(1, self.ntype_in_dim[t])) for t in self.all_types}
-        self.edge_recons_encoder = module_selection(
-            relations=relations,
-            in_dim=self.target_in_dim,
-            hidden_dim=self.enc_dim,
-            out_dim=self.enc_dim,
-            num_heads=self.enc_heads,
-            num_out_heads=self.enc_heads,
-            num_layer=self.num_layer,
-            dropout=self.dropout,
-            module_type=self.encoder_type,
-            weight_T=self.weight_T,
-            status="encoder",
-        )
         self.encoder = module_selection(
             relations=relations,
-            in_dim=self.target_in_dim,
+            in_dim=self.ntype_in_dim,
             hidden_dim=self.enc_dim,
             out_dim=self.enc_dim,
             num_heads=self.enc_heads,
@@ -160,15 +152,17 @@ class HGARME(nn.Module):
         self.encoder_to_decoder = nn.Linear(self.dec_in_dim, self.dec_in_dim, bias=False)
         self.edge_recons_encoder_to_decoder = nn.Linear(self.dec_in_dim, self.dec_in_dim, bias=False)
 
-    def forward(self, subgs, relations, epoch=None):
+    def forward(self, graph, features, relations, epoch=None):
         try:
             node_feature_recons_loss = 0
             adjmatrix_recons_loss = 0
             ## Calculate node feature reconstruction loss
+            feat_recons_use_feats = features.copy()
+            edge_recons_use_feats = features.copy()
             if self.feat_recons:
-                node_feature_recons_loss = self.mask_attribute_reconstruction(subgs, relations, epoch)
+                node_feature_recons_loss = self.mask_attribute_reconstruction(graph, feat_recons_use_feats, relations, epoch)
             if self.edge_recons:
-                adjmatrix_recons_loss = self.mask_edge_reconstruction(subgs, relations, epoch)
+                adjmatrix_recons_loss = self.mask_edge_reconstruction(graph, edge_recons_use_feats, relations, epoch)
 
             ## Calculate adjacent matrix reconstruction loss
             return node_feature_recons_loss, adjmatrix_recons_loss
@@ -177,7 +171,7 @@ class HGARME(nn.Module):
             if "CUDA" in str(e):
                 # Write the error message to a log file
                 log_times = datetime.now().strftime("[%Y-%m-%d_%H:%M:%S]")
-                with open(f"./log/error/gpu_error_{log_times}.log", "a") as f:
+                with open(f"./log/gpu_error_{log_times}.log", "a") as f:
                     f.write(f"GPU Runtime Error: {e}\n")
                     f.write(traceback.format_exc())
             else:
@@ -211,14 +205,14 @@ class HGARME(nn.Module):
             else:
                 raise NotImplementedError
 
-    def mask_edge_reconstruction(self, subgs, relations, epoch=None):
+    def mask_edge_reconstruction(self, graph, relations, epoch=None):
         ### src node should be encode to reconstruct adjacent matrix, rev relation should do same thing again
         ### we use dst-based graph's dst_node and src-based graph's dst_node to reconstruct adjacent matrix
         ### But if there are connection on same type of node, we just use dst_based_subg to reconstruct adjacent matrix
         curr_mask_rate = self.get_mask_rate(self.mask_rate, epoch=epoch)
 
-        src_based_subg = subgs[-2]
-        dst_based_subg = subgs[-1]
+        src_based_subg = graph[-2]
+        dst_based_subg = graph[-1]
         all_adjmatrix_recons_loss = 0.0
         ## this dict contain the dst src dec_rep pair to reconstruct the adjacent matrix
         all_rel_pair_dec_rep = {}
@@ -233,14 +227,14 @@ class HGARME(nn.Module):
             if not self.all_edge_recons and use_ntype != self.target_type:
                 continue
 
-            dst_enc_rep, att_mp = self.encoder(subgs, 1, relations, use_ntype, use_x, "edge_recons", curr_mask_rate=curr_mask_rate)
+            dst_enc_rep, att_mp = self.encoder(graph, 1, relations, use_ntype, use_x, "edge_recons", curr_mask_rate=curr_mask_rate)
             # src_ntype_rep=[self.edge_recons_encoder_to_decoder[ntype][idx](enc_rep) for idx,enc_rep in enumerate(src_ntype_enc_rep)]
             dst_based_embs[use_ntype] = self.encoder_to_decoder(dst_enc_rep)
         for use_ntype, use_x in src_based_x.items():
             if not self.all_edge_recons and use_ntype != self.target_type:
                 continue
 
-            src_enc_rep, att_mp = self.encoder(subgs, 2, relations, use_ntype, use_x, "edge_recons", curr_mask_rate=curr_mask_rate)
+            src_enc_rep, att_mp = self.encoder(graph, 2, relations, use_ntype, use_x, "edge_recons", curr_mask_rate=curr_mask_rate)
             # src_ntype_rep=[self.edge_recons_encoder_to_decoder[ntype][idx](enc_rep) for idx,enc_rep in enumerate(src_ntype_enc_rep)]
 
             src_based_embs[use_ntype] = self.encoder_to_decoder(src_enc_rep)
@@ -261,32 +255,40 @@ class HGARME(nn.Module):
             num_loss += 1
         return all_adjmatrix_recons_loss / num_loss
 
-    def mask_attribute_reconstruction(self, subgs, relations, epoch=None):
+    def mask_attribute_reconstruction(self, graph, features, relations, epoch=None):
         ### only used dst node to do attribute reconstruction
         ## x represent all node features
         ## use_x represent target predicted node's features
-
-        curr_mask_rate = self.get_mask_rate(self.mask_rate, epoch=epoch)
-
-        dst_x = subgs[-1].dstdata["feat"]
-        if not self.all_feat_recons:
-            dst_x = {self.target_type: dst_x[self.target_type]}
-        use_dst_x, (ntypes_mask_nodes, ntypes_keep_nodes) = self.encode_mask_noise(subgs, dst_x, curr_mask_rate)
         all_node_feature_recons_loss = 0.0
+        curr_mask_rate = self.get_mask_rate(self.mask_rate, epoch=epoch)
+        dst_x = features.copy()
+        if not self.all_feat_recons:
+            dst_x = {self.target_type: features[self.target_type]}
+
+        use_dst_x, (ntypes_mask_nodes, ntypes_keep_nodes) = self.encode_mask_noise(graph, dst_x, curr_mask_rate)
+        ntypes_hidden_rep = {}
+        ## encoder
         for use_ntype, use_x in use_dst_x.items():
-            mask_nodes = ntypes_mask_nodes[use_ntype]
-            enc_rep, att_mp = self.encoder(subgs, 1, relations, use_ntype, use_x, "encoder")
+
+            enc_rep, att_mp = self.encoder(graph, 1, relations, use_ntype, use_x, features, "encoder")
 
             hidden_rep = self.encoder_to_decoder(enc_rep)
+            ntypes_hidden_rep[use_ntype] = hidden_rep
+
+        for ntype, hidden_rep in ntypes_hidden_rep.items():
+            features[ntype] = hidden_rep
+        ## decoder
+        for ntype, hidden_rep in ntypes_hidden_rep.items():
             # remask
+            mask_nodes = ntypes_mask_nodes[ntype]
             hidden_rep[mask_nodes] = 0.0
-            # decoder module
+            # decoder module, feature input need to be change because we used diff type node aggregation
             if self.decoder_type == "HGraphSAGE":
-                dec_rep, att_mp = self.decoder(subgs, 1, relations, use_ntype, hidden_rep, "decoder")
+                dec_rep, att_mp = self.decoder(graph, 1, relations, ntype, hidden_rep, features, "decoder")
             elif self.decoder_type == "MLP":
                 dec_rep = self.decoder(hidden_rep)
             ## calculate all type nodes feature reconstruction
-            ntype_loss = self.criterion(dst_x[use_ntype][mask_nodes], dec_rep[mask_nodes])
+            ntype_loss = self.criterion(dst_x[ntype][mask_nodes], dec_rep[mask_nodes])
             all_node_feature_recons_loss += ntype_loss
         return all_node_feature_recons_loss / len(use_dst_x)
 
@@ -303,25 +305,25 @@ class HGARME(nn.Module):
             mask_nodes = permutation[:num_mask_nodes]
             keep_nodes = permutation[num_mask_nodes:]
             #### tmp block
-            # replace_rate = 0.3
-            # leave_unchanged = 0.2
-            # perm_mask = torch.randperm(num_mask_nodes, device=x.device)
-            # num_leave_nodes = int(leave_unchanged * num_mask_nodes)
-            # num_noise_nodes = int(replace_rate * num_mask_nodes)
-            # num_real_mask_nodes = num_mask_nodes - num_leave_nodes - num_noise_nodes
-            # token_nodes = mask_nodes[perm_mask[:num_real_mask_nodes]]
-            # noise_nodes = mask_nodes[perm_mask[-num_noise_nodes:]]
-            # noise_to_be_chosen = torch.randperm(num_nodes, device=x.device)[:num_noise_nodes]
+            replace_rate = 0.3
+            leave_unchanged = 0.2
+            perm_mask = torch.randperm(num_mask_nodes, device=x.device)
+            num_leave_nodes = int(leave_unchanged * num_mask_nodes)
+            num_noise_nodes = int(replace_rate * num_mask_nodes)
+            num_real_mask_nodes = num_mask_nodes - num_leave_nodes - num_noise_nodes
+            token_nodes = mask_nodes[perm_mask[:num_real_mask_nodes]]
+            noise_nodes = mask_nodes[perm_mask[-num_noise_nodes:]]
+            noise_to_be_chosen = torch.randperm(num_nodes, device=x.device)[:num_noise_nodes]
 
-            # out_x = x.clone()
-            # out_x[token_nodes] = 0.0
-            # enc_mask_token = self.ntype_enc_mask_token[ntype].to(x.device)
-            # out_x[token_nodes] += enc_mask_token
-            # if num_noise_nodes > 0:
-            #     out_x[noise_nodes] = x[noise_to_be_chosen]
-            # ntypes_mask_x[ntype] = out_x
-            # ntypes_mask_nodes[ntype] = mask_nodes
-            # ntypes_keep_nodes[ntype] = keep_nodes
+            out_x = x.clone()
+            out_x[token_nodes] = 0.0
+            enc_mask_token = self.ntype_enc_mask_token[ntype].to(x.device)
+            out_x[token_nodes] += enc_mask_token
+            if num_noise_nodes > 0:
+                out_x[noise_nodes] = x[noise_to_be_chosen]
+            ntypes_mask_x[ntype] = out_x
+            ntypes_mask_nodes[ntype] = mask_nodes
+            ntypes_keep_nodes[ntype] = keep_nodes
 
             ### tmp block
 
