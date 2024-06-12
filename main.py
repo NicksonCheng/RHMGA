@@ -176,6 +176,8 @@ def train(args):
         model.train()
         train_loss = 0.0
         for i, mini_batch in enumerate(dataloader):
+            model.train()
+            optimizer.zero_grad()
             src_nodes, dst_nodes, subgs = mini_batch
             # print("----------------------------------")
             # for rels_tuple in relations:
@@ -189,7 +191,6 @@ def train(args):
             edge_weight = 1
             loss = feat_weight * feat_loss + edge_weight * adj_loss
             train_loss += loss.item()
-            optimizer.zero_grad()
 
             loss.backward()
             optimizer.step()
@@ -201,6 +202,7 @@ def train(args):
         total_loss.append(avg_train_loss)
         ## Evaluate Embedding Performance
         if epoch > 0 and ((epoch + 1) % args.eva_interval) == 0:
+            model.eval()
             # print(f"feat weight{feat_weight.item()} edge weight{edge_weight.item()}")
             # if True:
             file_name = name_file(args, "log", log_times)
@@ -217,24 +219,30 @@ def train(args):
                     [features],
                     "evaluation",
                 )
+                enc_feat = enc_feat.detach()
                 if args.task == "classification":
                     if data.has_label_ratio:
                         for ratio in data.label_ratio:
-                            max_acc, max_micro, max_macro = node_classification_evaluate(
-                                device_1, enc_feat, args, num_classes, target_type_labels, masked_graph[ratio], data.multilabel
+                            for split in masked_graph[ratio].keys():
+                                masked_graph[ratio][split] = masked_graph[ratio][split].detach()
+                            mean, std = node_classification_evaluate(
+                                device_1, enc_feat, args, num_classes, target_type_labels.detach(), masked_graph[ratio], data.multilabel
                             )
+
                             if ratio not in performance:
                                 performance[ratio] = {"Acc": [], "Micro-F1": [], "Macro-F1": []}
-
-                            performance[ratio]["Acc"].append(max_acc)
-                            performance[ratio]["Micro-F1"].append(max_micro)
-                            performance[ratio]["Macro-F1"].append(max_macro)
+                            performance[ratio]["Acc"].append(mean["acc"])
+                            performance[ratio]["Micro-F1"].append(mean["micro_f1"])
+                            performance[ratio]["Macro-F1"].append(mean["macro_f1"])
                             log_file.write(
-                                "\t Label Rate:{}% [Accuracy:{:4f} Micro-F1:{:4f} Macro-F1:{:4f}  ]\n".format(
+                                "\t Label Rate:{}% Accuracy:[{:.4f}, {:.4f}] Micro-F1:[{:.4f}, {:.4f}] Macro-F1:[{:.4f}, {:.4f}]  \n".format(
                                     ratio,
-                                    max_acc,
-                                    max_micro,
-                                    max_macro,
+                                    mean["acc"],
+                                    std["acc"],
+                                    mean["micro_f1"],
+                                    std["micro_f1"],
+                                    mean["macro_f1"],
+                                    std["macro_f1"],
                                 )
                             )
 

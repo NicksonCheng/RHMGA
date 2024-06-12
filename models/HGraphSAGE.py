@@ -200,8 +200,8 @@ class HGraphSAGE(nn.Module):
             src, rel, dst = rels_tuple
             if dst_ntype == dst:
                 ## sepearate relation graph
-                clone_g = subg.clone()
-                rels_subg = clone_g[rels_tuple]
+
+                rels_subg = subg[rels_tuple]
                 use_src_ntype_feats[src] = src_ntype_feats[src]
                 if masked:
                     rels_subg = self.mask_edges_func(rels_subg, mask_rate)
@@ -247,7 +247,7 @@ class HGraphSAGE(nn.Module):
         curr_mask_rate: float = 0.3,
     ):
 
-    ### this code block is temporary for 1-layer SRN
+        ### this code block is temporary for 1-layer SRN
         curr_layer = start_layer
         edge_masked = True if status == "edge_recons_encoder" and curr_layer == 1 else False
         curr_subg = subgs[-curr_layer]
