@@ -8,6 +8,7 @@ from dgl.nn.pytorch.conv import GATConv
 
 # from models.gat import GATConv
 from dgl.ops import edge_softmax
+from dgl.heterograph import DGLBlock
 
 
 class HeCoGATConv(nn.Module):
@@ -105,10 +106,11 @@ class Schema_Relation_Network(nn.Module):
 
     def forward(
         self,
-        rels_subgraphs,
-        dst_ntype,
-        dst_feat,
-        src_feat,
+        rels_subgraphs: dict,
+        dst_ntype: str,
+        dst_feat: torch.Tensor,
+        src_feat: dict,
+        status: str,
     ):
         ## Linear Transformation to same dimension
         neighbors_feat = {}
@@ -153,11 +155,11 @@ class HGraphSAGE(nn.Module):
         self.weight_T = weight_T
         self.layers = nn.ModuleList()
 
-        for i in range(self.num_layer):
+        for i in range(3):
             self.layers.append(Schema_Relation_Network(relations, hidden_dim, weight_T))
         ## for edge reconstruction src_based feature
-        if self.num_layer == 1:
-            self.layers.append(Schema_Relation_Network(relations, hidden_dim, weight_T))
+        # if self.num_layer == 1:
+        #     self.layers.append(Schema_Relation_Network(relations, hidden_dim, weight_T))
 
         ## out_dim has different type of nodes
         if status == "decoder":
@@ -189,46 +191,95 @@ class HGraphSAGE(nn.Module):
 
         return rels_subg
 
-    def neighbor_sampling(self, subgs, curr_layer, relations, dst_ntype, dst_feat, status, mask_rate=0.3):
-        src_ntype_feats = {}
+    def seperate_relation_graph(
+        self, subg: DGLBlock, relations: list, dst_ntype: str, src_ntype_feats: torch.Tensor, masked: bool, mask_rate: float = 0.3
+    ):
         rels_subgraphs = {}
-        if status == "evaluation":
-            curr_subgs = subgs
-        else:
-            num_subgs = len(subgs)
-            curr_subgs = subgs[num_subgs - curr_layer]
+        use_src_ntype_feats = {}
         for rels_tuple in relations:
-            if dst_ntype == rels_tuple[2]:
-
-                ## sample src neighbor feature
-                src_ntype = rels_tuple[0]
-                if status == "evaluation":
-                    src_ntype_feats[src_ntype] = curr_subgs.nodes[src_ntype].data["feat"]
-                else:
-                    src_ntype_feats[src_ntype] = curr_subgs.srcdata["feat"][src_ntype]
-
+            src, rel, dst = rels_tuple
+            if dst_ntype == dst:
                 ## sepearate relation graph
-                clone_g = curr_subgs.clone()
+                clone_g = subg.clone()
                 rels_subg = clone_g[rels_tuple]
-                if status == "edge_recons" and curr_layer == 1:
-                    rels_subg = self.mask_edges_func(rels_subg, mask_rate=0.3)
-
+                use_src_ntype_feats[src] = src_ntype_feats[src]
+                if masked:
+                    rels_subg = self.mask_edges_func(rels_subg, mask_rate)
                 rels_subgraphs[rels_tuple] = rels_subg
-        if curr_layer >= self.num_layer:
+        return rels_subgraphs, use_src_ntype_feats
 
-            dst_feat, att_mp = self.layers[curr_layer - 1](rels_subgraphs, dst_ntype, dst_feat, src_ntype_feats)
-            return dst_feat, att_mp
+    def neighbor_sampling(
+        self,
+        subgs: list,
+        curr_layer: int,
+        relations: list,
+        dst_ntype: str,
+        dst_feat: torch.Tensor,
+        subgs_src_ntype_feats: list,
+        status: str,
+        mask_rate: float = 0.3,
+    ):
+        edge_masked = True if status == "edge_recons_encoder" and curr_layer == 1 else False
+        curr_subg = subgs[-curr_layer]
+        src_ntype_feats = subgs_src_ntype_feats[-curr_layer]
 
-        else:
+        rels_subgraphs, src_ntype_feats = self.seperate_relation_graph(curr_subg, relations, dst_ntype, src_ntype_feats, edge_masked, mask_rate)
+        if curr_layer < self.num_layer:
             ## layer n-1 dst feat will be layer n src feat
             for ntype, feat in src_ntype_feats.items():
-                src_ntype_feats[ntype], att_mp = self.neighbor_sampling(subgs, curr_layer + 1, relations, ntype, feat, status)
-            dst_feat, att_mp = self.layers[curr_layer - 1](rels_subgraphs, dst_ntype, dst_feat, src_ntype_feats)
+                src_ntype_feats[ntype], att_mp = self.neighbor_sampling(subgs, curr_layer + 1, relations, ntype, feat, subgs_src_ntype_feats, status)
 
-            return dst_feat, att_mp
+            subgs_src_ntype_feats[-curr_layer] = src_ntype_feats
 
-    def forward(self, subgs, start_layer, relations, dst_ntype, mask_dst_feat, status="encoder", curr_mask_rate=0.3):
-        z, att_mp = self.neighbor_sampling(subgs, start_layer, relations, dst_ntype, mask_dst_feat, status, curr_mask_rate)
-        if status == "decoder":
+        dst_feat, att_mp = self.layers[curr_layer - 1](rels_subgraphs, dst_ntype, dst_feat, src_ntype_feats, status)
+
+        return dst_feat, att_mp
+
+    def forward(
+        self,
+        subgs: list,
+        start_layer: int,
+        relations: list,
+        dst_ntype: str,
+        mask_dst_feat: torch.Tensor,
+        subgs_src_ntype_feats: list,
+        status: str = "encoder",
+        curr_mask_rate: float = 0.3,
+    ):
+
+    ### this code block is temporary for 1-layer SRN
+        curr_layer = start_layer
+        edge_masked = True if status == "edge_recons_encoder" and curr_layer == 1 else False
+        curr_subg = subgs[-curr_layer]
+        src_ntype_feats = subgs_src_ntype_feats[-curr_layer]
+
+        # for dst node feature aggregation
+        rels_subgraphs, src_ntype_feats = self.seperate_relation_graph(curr_subg, relations, dst_ntype, src_ntype_feats, edge_masked, curr_mask_rate)
+        z, att_mp = self.layers[curr_layer - 1](rels_subgraphs, dst_ntype, mask_dst_feat, src_ntype_feats, status)
+
+        if status == "evaluation":
+            return z, att_mp
+        # for src node(n layer src n+1 layer dst) feature aggregation
+        curr_layer = curr_layer + 1
+        curr_subg = subgs[-curr_layer]
+        curr_subg_dst_feats = curr_subg.dstdata["feat"]
+        curr_subg_src_feats = subgs_src_ntype_feats[-curr_layer]
+        for ntype, feat in curr_subg_dst_feats.items():
+            rels_subgraphs, use_src_feats = self.seperate_relation_graph(curr_subg, relations, ntype, curr_subg_src_feats, False, curr_mask_rate)
+            src_ntype_feats[ntype], att_mp = self.layers[curr_layer - 1](rels_subgraphs, ntype, feat, use_src_feats, status)
+
+        # back to first layer
+        curr_layer = curr_layer - 1
+        subgs_src_ntype_feats[-curr_layer] = src_ntype_feats
+
+        if status == "decoder" or status == "edge_recons_decoder":
             z = self.ntypes_decoder_trans[dst_ntype](z)
+
         return z, att_mp
+
+    ###
+
+    # z, att_mp = self.neighbor_sampling(subgs, start_layer, relations, dst_ntype, mask_dst_feat, subgs_src_ntype_feats, status, curr_mask_rate)
+    # if status == "decoder":
+    #     z = self.ntypes_decoder_trans[dst_ntype](z)
+    # return z, att_mp

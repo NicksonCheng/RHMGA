@@ -3,6 +3,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from sklearn.metrics import f1_score, mean_squared_error, roc_auc_score
+from sklearn.cluster import KMeans
+from sklearn.metrics.cluster import normalized_mutual_info_score,adjusted_rand_score
+from sklearn.manifold import TSNE
 from tqdm import tqdm
 from utils.utils import colorize
 from torch.optim import SparseAdam
@@ -100,9 +103,17 @@ def metapath2vec_train(args, graph, target_type, model, epoch, device):
             total_loss += loss.item()
     return model
 
+def node_clustering_evaluate(embeds, y, n_labels, kmeans_random_state):
+    embeds = embeds.cpu().detach().numpy()
+    y = y.cpu().detach().numpy()
+    Y_pred = KMeans(n_clusters=n_labels, random_state=kmeans_random_state,n_init=10).fit(embeds).predict(embeds)
+    nmi = normalized_mutual_info_score(y, Y_pred)
+    ari = adjusted_rand_score(y, Y_pred)
 
+
+    return nmi, ari
 def node_classification_evaluate(device, enc_feat, args, num_classes, labels, masked_graph, multilabel):
-    classifier = MLP(num_dim=args.num_hidden, num_classes=num_classes)
+    classifier = MLP(num_dim=enc_feat.shape[-1], num_classes=num_classes)
     # classifier = LogReg(ft_in=args.num_hidden, nb_classes=num_classes)
     classifier = classifier.to(device)
     optimizer = optim.Adam(classifier.parameters(), lr=args.eva_lr, weight_decay=args.eva_wd)
@@ -115,24 +126,25 @@ def node_classification_evaluate(device, enc_feat, args, num_classes, labels, ma
         "val": enc_feat[val_mask].to(device),
         "test": enc_feat[test_mask].to(device),
     }
-
     labels = {
         "train": labels[train_mask].squeeze().cpu(),
         "val": labels[val_mask].squeeze().cpu(),
         "test": labels[test_mask].squeeze().cpu(),
     }
+
     val_macro = []
     val_micro = []
     val_accuracy = []
     best_val_acc = 0.0
     best_model_state_dict = None
+    loss_func=nn.CrossEntropyLoss()
     for epoch in tqdm(range(args.eva_epoches), position=0, desc=colorize("Evaluating", "green")):
         classifier.train()
         train_output = classifier(multilabel, emb["train"]).cpu()
         if multilabel:
             eva_loss = F.binary_cross_entropy(train_output, labels["train"])
         else:
-            eva_loss = F.cross_entropy(train_output, labels["train"])
+            eva_loss = loss_func(train_output, labels["train"])
         optimizer.zero_grad()
         eva_loss.backward(retain_graph=True)
         optimizer.step()

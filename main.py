@@ -26,12 +26,13 @@ from utils.preprocess_IMDB import IMDbDataset
 from utils.preprocess_Freebase import FreebaseDataset
 from utils.preprocess_Yelp import YelpDataset
 from utils.preprocess_PubMed import PubMedDataset
-from utils.evaluate import score, node_classification_evaluate, metapath2vec_train
-from utils.utils import load_config, colorize, name_file
+from utils.evaluate import score, node_classification_evaluate, node_clustering_evaluate, metapath2vec_train
+from utils.utils import load_config, colorize, name_file, visualization
 from models.HGARME import HGARME
 from models.HAN import HAN
 from tqdm import tqdm
 from collections import Counter
+from sklearn.manifold import TSNE
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
 
@@ -184,8 +185,8 @@ def train(args):
             feat_loss, adj_loss = model(subgs, relations, epoch)
             # weight = torch.softmax(raw_weights, dim=0)
             # edge_weight, feat_weight = weight[0], weight[1]
-            feat_weight = 0.5
-            edge_weight = 0.5
+            feat_weight = 1
+            edge_weight = 1
             loss = feat_weight * feat_loss + edge_weight * adj_loss
             train_loss += loss.item()
             optimizer.zero_grad()
@@ -194,6 +195,7 @@ def train(args):
             optimizer.step()
             scheduler.step()
             # print(f"Batch {i} Loss: {loss.item()}")
+            # break
         avg_train_loss = train_loss / len(dataloader)
         print(f"Epoch:{epoch+1}/{args.epoches} Training Loss:{(avg_train_loss)} Learning_rate={scheduler.get_last_lr()}")
         total_loss.append(avg_train_loss)
@@ -207,49 +209,66 @@ def train(args):
                 log_file.write(f"Epoches:{epoch}-----------------------------------\n")
 
                 enc_feat, att_mp = model.encoder(
-                    graph,
+                    [graph],
                     1,
                     relations,
                     target_type,
                     features[target_type],
+                    [features],
                     "evaluation",
                 )
-                if data.has_label_ratio:
-                    for ratio in data.label_ratio:
-                        max_acc, max_micro, max_macro = node_classification_evaluate(
-                            device_1, enc_feat, args, num_classes, target_type_labels, masked_graph[ratio], data.multilabel
-                        )
-                        if ratio not in performance:
-                            performance[ratio] = {"Acc": [], "Micro-F1": [], "Macro-F1": []}
+                if args.task == "classification":
+                    if data.has_label_ratio:
+                        for ratio in data.label_ratio:
+                            max_acc, max_micro, max_macro = node_classification_evaluate(
+                                device_1, enc_feat, args, num_classes, target_type_labels, masked_graph[ratio], data.multilabel
+                            )
+                            if ratio not in performance:
+                                performance[ratio] = {"Acc": [], "Micro-F1": [], "Macro-F1": []}
 
-                        performance[ratio]["Acc"].append(max_acc)
-                        performance[ratio]["Micro-F1"].append(max_micro)
-                        performance[ratio]["Macro-F1"].append(max_macro)
+                            performance[ratio]["Acc"].append(max_acc)
+                            performance[ratio]["Micro-F1"].append(max_micro)
+                            performance[ratio]["Macro-F1"].append(max_macro)
+                            log_file.write(
+                                "\t Label Rate:{}% [Accuracy:{:4f} Micro-F1:{:4f} Macro-F1:{:4f}  ]\n".format(
+                                    ratio,
+                                    max_acc,
+                                    max_micro,
+                                    max_macro,
+                                )
+                            )
+
+                    else:
+                        max_acc, max_micro, max_macro = node_classification_evaluate(
+                            device_1, enc_feat, args, num_classes, target_type_labels, masked_graph, data.multilabel
+                        )
+                        if not performance:
+                            performance = {"Acc": [], "Micro-F1": [], "Macro-F1": []}
+                        performance["Acc"].append(max_acc)
+                        performance["Micro-F1"].append(max_micro)
+                        performance["Macro-F1"].append(max_macro)
                         log_file.write(
-                            "\t Label Rate:{}% [Accuracy:{:4f} Micro-F1:{:4f} Macro-F1:{:4f}  ]\n".format(
-                                ratio,
+                            "\t [Accuracy:{:4f} Micro-F1:{:4f} Macro-F1:{:4f}  ]\n".format(
                                 max_acc,
                                 max_micro,
                                 max_macro,
                             )
                         )
+                elif args.task == "clustering":
+                    nmi_list, ari_list = [], []
 
-                else:
-                    max_acc, max_micro, max_macro = node_classification_evaluate(
-                        device_1, enc_feat, args, num_classes, target_type_labels, masked_graph, data.multilabel
-                    )
-                    if not performance:
-                        performance = {"Acc": [], "Micro-F1": [], "Macro-F1": []}
-                    performance["Acc"].append(max_acc)
-                    performance["Micro-F1"].append(max_micro)
-                    performance["Macro-F1"].append(max_macro)
+                    for kmeans_random_state in range(10):
+                        nmi, ari = node_clustering_evaluate(enc_feat, target_type_labels, num_classes, kmeans_random_state)
+                        nmi_list.append(nmi)
+                        ari_list.append(ari)
                     log_file.write(
-                        "\t [Accuracy:{:4f} Micro-F1:{:4f} Macro-F1:{:4f}  ]\n".format(
-                            max_acc,
-                            max_micro,
-                            max_macro,
+                        "\t[clustering] nmi: [{:.4f}, {:.4f}] ari: [{:.4f}, {:.4f}]".format(
+                            np.mean(nmi_list), np.std(nmi_list), np.mean(ari_list), np.std(ari_list)
                         )
                     )
+
+                    ## plot t-SNE result
+                    visualization(enc_feat, target_type_labels, log_times, epoch)
 
     ####
     ## plot the performance
@@ -296,7 +315,7 @@ if __name__ == "__main__":
     parser.add_argument("--num_hidden", type=int, default=256, help="number of hidden units")
     parser.add_argument("--lr", type=float, default=0.001, help="learning rate")
     parser.add_argument("--mask_rate", type=float, default=0.4, help="mask rate")
-    parser.add_argument("--dynamic_mask_rate", type=str, default="0.5,0.005,0.8", help="dynamic mask rate")
+    parser.add_argument("--dynamic_mask_rate", type=str, default="0.3,0.002,0.9", help="dynamic mask rate")
     parser.add_argument("--dropout", type=float, default=0.4, help="dropout probability")
     parser.add_argument("--encoder", type=str, default="HAN", help="heterogeneous encoder")
     parser.add_argument("--decoder", type=str, default="HAN", help="Heterogeneous decoder")
@@ -313,6 +332,7 @@ if __name__ == "__main__":
     parser.add_argument("--use_config", default=True, help="use best parameter in config.yaml ")
     parser.add_argument("--reverse_edge", default=True, help="add reverse edge or not")
     parser.add_argument("--mp2vec_feat", default=True, help="add reverse edge or not")
+    parser.add_argument("--task", default="classification", help="downstream task")
     known_args, unknow_args = parser.parse_known_args()
 
     cmd_args = [arg.lstrip("-") for arg in sys.argv[1:] if arg.startswith("--")]
