@@ -3,14 +3,16 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from sklearn.metrics import f1_score, mean_squared_error, roc_auc_score
+from sklearn.metrics import f1_score, roc_auc_score
 from sklearn.cluster import KMeans
 from sklearn.metrics.cluster import normalized_mutual_info_score, adjusted_rand_score
+from sklearn.model_selection import StratifiedKFold
 from sklearn.manifold import TSNE
 from tqdm import tqdm
 from utils.utils import colorize
 from torch.optim import SparseAdam
 from torch.utils.data import DataLoader
+from sklearn.svm import LinearSVC
 
 
 class LogReg(nn.Module):
@@ -29,7 +31,7 @@ class LogReg(nn.Module):
 
     def forward(self, multilabel, seq):
         ret = self.fc(seq)
-        return ret
+        return F.softmax(ret, dim=1)
 
 
 # MLP Model
@@ -71,20 +73,6 @@ def score(logits, labels, multilabel):
     )
 
 
-def mse(x, y):
-    return mean_squared_error(x, y)
-
-
-def cosine_similarity(x, y, gamma):
-    # x=tensor(node_num,attribute_dim)
-
-    x = F.normalize(x, p=2, dim=-1)
-    y = F.normalize(y, p=2, dim=-1)
-
-    cos_sim = (1 - (x * y).sum(dim=-1)).pow_(gamma).mean()
-    return cos_sim
-
-
 def metapath2vec_train(args, graph, target_type, model, epoch, device):
     for e in tqdm(range(epoch), desc="Metapath2vec Training"):
         # Use the source node type of etype 'uc'
@@ -108,7 +96,7 @@ def metapath2vec_train(args, graph, target_type, model, epoch, device):
 
 
 def node_clustering_evaluate(embeds, y, n_labels, kmeans_random_state):
-    embeds = embeds.cpu().detach().numpy()
+    embeds = embeds.cpu().numpy()
     y = y.cpu().detach().numpy()
     Y_pred = KMeans(n_clusters=n_labels, random_state=kmeans_random_state, n_init=10).fit(embeds).predict(embeds)
     nmi = normalized_mutual_info_score(y, Y_pred)
@@ -128,15 +116,15 @@ def node_classification_evaluate(device, enc_feat, args, num_classes, labels, ma
         "test": enc_feat[test_mask].to(device),
     }
     labels = {
-        "train": labels[train_mask].squeeze(),
-        "val": labels[val_mask].squeeze(),
-        "test": labels[test_mask].squeeze(),
+        "train": labels[train_mask].squeeze().detach(),
+        "val": labels[val_mask].squeeze().detach(),
+        "test": labels[test_mask].squeeze().detach(),
     }
     accs = []
     micro_f1s = []
     macro_f1s = []
     auc_score_list = []
-    for _ in range(10):
+    for _ in tqdm(range(50), position=0, desc=colorize("Evaluating", "green")):
 
         classifier = MLP(num_dim=enc_feat.shape[-1], num_classes=num_classes).to(device)
         # classifier = LogReg(ft_in=args.num_hidden, nb_classes=num_classes).to(device)
@@ -151,7 +139,7 @@ def node_classification_evaluate(device, enc_feat, args, num_classes, labels, ma
         best_val_acc = 0.0
         best_model_state_dict = None
         loss_func = nn.CrossEntropyLoss()
-        for epoch in tqdm(range(args.eva_epoches), position=0, desc=colorize("Evaluating", "green")):
+        for epoch in range(args.eva_epoches):
             classifier.train()
             train_output = classifier(multilabel, emb["train"])
             if multilabel:
@@ -203,16 +191,16 @@ def node_classification_evaluate(device, enc_feat, args, num_classes, labels, ma
         )
 
     mean = {
-        "acc": np.mean(auc_score_list),
+        "acc": np.mean(accs),
         "micro_f1": np.mean(micro_f1s),
         "macro_f1": np.mean(macro_f1s),
-        "auc": np.mean(auc_score_list),
+        "auc_roc": np.mean(auc_score_list),
     }
     std = {
-        "acc": np.std(auc_score_list),
+        "acc": np.std(accs),
         "micro_f1": np.std(micro_f1s),
         "macro_f1": np.std(macro_f1s),
-        "auc": np.std(auc_score_list),
+        "auc_roc": np.std(auc_score_list),
     }
     return mean, std
     classifier.load_state_dict(best_model_state_dict)
@@ -220,3 +208,86 @@ def node_classification_evaluate(device, enc_feat, args, num_classes, labels, ma
     test_acc, test_micro_f1, test_macro_f1 = score(test_output, labels["test"], multilabel)
     return test_acc, test_micro_f1, test_macro_f1
     # return max(val_accuracy), max(val_micro), max(val_macro)
+
+
+def LGS_node_classification_evaluate(device, enc_feat, args, num_classes, labels, masked_graph, multilabel):
+
+    labeled_indices = torch.where(masked_graph["total"] > 0)[0]  ## because the mask is a tensor, so we need to use torch.where to get the indices
+    ## node all nodes has labels
+    labels_dict = labels[labeled_indices].squeeze().detach().cpu()
+    enc_feat_dict = enc_feat[labeled_indices].detach().cpu()
+
+    seed = np.random.seed(1)
+    skf = StratifiedKFold(n_splits=10, shuffle=True, random_state=seed)
+    accs = []
+    micro_f1s = []
+    macro_f1s = []
+    auc_roc_list = []
+    for train_index, test_index in skf.split(enc_feat_dict, labels_dict):
+        clf = LinearSVC(random_state=seed, max_iter=3000, dual="auto")
+        clf.fit(enc_feat_dict[train_index], labels_dict[train_index])
+        pred = clf.predict(enc_feat_dict[test_index])
+
+        macro_f1s.append(f1_score(labels_dict[test_index], pred, average="macro"))
+        micro_f1s.append(f1_score(labels_dict[test_index], pred, average="micro"))
+    mean = {
+        "micro_f1": np.mean(micro_f1s),
+        "macro_f1": np.mean(macro_f1s),
+    }
+    std = {
+        "micro_f1": np.std(micro_f1s),
+        "macro_f1": np.std(macro_f1s),
+    }
+    return mean, std
+
+    for train_index, test_index in skf.split(enc_feat_dict, labels_dict):
+        classifier = MLP(num_dim=enc_feat.shape[-1], num_classes=num_classes).to(device)
+        optimizer = optim.Adam(classifier.parameters(), lr=args.eva_lr, weight_decay=args.eva_wd)
+        test_accs = []
+        test_micro_f1s = []
+        test_macro_f1s = []
+        test_out_list = []
+
+        enc_feat_dict = enc_feat_dict.to(device)
+        labels_dict = labels_dict.to(device)
+
+        for epoches in tqdm(range(args.eva_epoches), position=0, desc=colorize("Evaluating", "green")):
+            classifier.train()
+
+            train_output = classifier(multilabel, enc_feat_dict[train_index])
+            if multilabel:
+                eva_loss = F.binary_cross_entropy(train_output, labels_dict[train_index])
+            else:
+                eva_loss = F.cross_entropy(train_output, labels_dict[train_index])
+            optimizer.zero_grad()
+            eva_loss.backward()
+            optimizer.step()
+            with torch.no_grad():
+                classifier.eval()
+                test_output = classifier(multilabel, enc_feat_dict[test_index])
+                test_acc, test_micro_f1, test_macro_f1 = score(test_output, labels_dict[test_index], multilabel)
+                test_out_list.append(test_output)
+                test_accs.append(test_acc)
+                test_micro_f1s.append(test_micro_f1)
+                test_macro_f1s.append(test_macro_f1)
+
+        max_inter = test_accs.index(max(test_accs))
+        accs.append(test_accs[max_inter])
+        max_inter = test_micro_f1s.index(max(test_micro_f1s))
+        micro_f1s.append(test_micro_f1s[max_inter])
+        max_inter = test_macro_f1s.index(max(test_macro_f1s))
+        macro_f1s.append(test_macro_f1s[max_inter])
+
+        best_output = test_out_list[max_inter]
+        test_label = labels_dict[test_index].cpu().detach().numpy()
+        best_output = best_output.cpu().detach().numpy()
+        auc_score = roc_auc_score(
+            y_true=test_label,
+            y_score=best_output,
+            multi_class="ovr",
+            average=None if multilabel else "macro",
+        )
+        auc_roc_list.append(auc_score)
+    mean = {"acc": np.mean(accs), "micro_f1": np.mean(micro_f1s), "macro_f1": np.mean(macro_f1s), "auc_roc": np.mean(auc_roc_list)}
+    std = {"acc": np.std(accs), "micro_f1": np.std(micro_f1s), "macro_f1": np.std(macro_f1s), "auc_roc": np.std(auc_roc_list)}
+    return mean, std

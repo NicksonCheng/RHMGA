@@ -3,16 +3,16 @@ imdb:
   epoches: 500
   batch_size: 512
   eva_interval: 10
-  eva_epoches: 100
+  eva_epoches: 200
   num_layer: 3
   num_heads: 8
   num_out_heads: 1
-  num_hidden: 128
-  lr: 0.001
+  num_hidden: 512
+  lr: 0.0001
   mask_rate: 0.3
   dropout: 0.4
-  encoder: "SRN"
-  decoder: "SRN"
+  encoder: "HGraphSAGE"
+  decoder: "HGraphSAGE"
   weight_decay: 0.0001
   eva_lr: 0.01
   eva_wd: 0.0001
@@ -23,6 +23,7 @@ imdb:
   feat_recons: True
   all_feat_recons: True
   all_edge_recons: True
+  mp2vec_feat: False
 
 heco_acm:
   dataset: "heco_acm"
@@ -84,8 +85,8 @@ heco_aminer:
   num_layer: 3
   num_heads: 8
   num_out_heads: 1
-  num_hidden: 128
-  lr: 0.001
+  num_hidden: 1024
+  lr: 0.0008
   mask_rate: 0.4
   dropout: 0.4
   encoder: "HGraphSAGE"
@@ -108,7 +109,7 @@ heco_freebase:
   epoches: 500
   batch_size: 512
   eva_interval: 10
-  eva_epoches: 100
+  eva_epoches: 200
   num_layer: 1
   num_heads: 8
   num_out_heads: 1
@@ -133,18 +134,18 @@ heco_freebase:
 PubMed:
   dataset: "PubMed"
   epoches: 500
-  batch_size: 4096
+  batch_size: 64
   eva_interval: 10
-  eva_epoches: 50
+  eva_epoches: 200
   num_layer: 3
   num_heads: 8
   num_out_heads: 1
-  num_hidden: 128
+  num_hidden: 512
   lr: 0.001
   mask_rate: 0.5
   dropout: 0.4
-  encoder: "SRN"
-  decoder: "SRN"
+  encoder: "HGraphSAGE"
+  decoder: "HGraphSAGE"
   weight_decay: 0.0001
   eva_lr: 0.01
   eva_wd: 0.0001

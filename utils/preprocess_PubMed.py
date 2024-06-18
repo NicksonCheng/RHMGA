@@ -2,12 +2,13 @@ import os
 import dgl
 import torch
 import pandas as pd
+import numpy as np
 from dgl.data import DGLDataset
 from torch_geometric.data import HeteroData
 from tqdm import tqdm
 from dgl.data.utils import save_graphs, load_graphs, generate_mask_tensor, idx2mask
 from collections import Counter
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, StratifiedKFold
 
 
 class PubMedDataset(DGLDataset):
@@ -69,7 +70,6 @@ class PubMedDataset(DGLDataset):
         save_graphs(os.path.join(self.data_path, "PubMed_dgl_graph.bin"), [self.graph])
 
     def process(self):
-
         nodes_file = pd.read_csv(
             os.path.join(self.data_path, "node.dat"),
             sep="\t",
@@ -124,7 +124,7 @@ class PubMedDataset(DGLDataset):
             else:
                 edges[rel_tuple][0].append(s)
                 edges[rel_tuple][1].append(d)
-            if s != t:
+            if src_t != dst_t:
                 ## self-defined rev relation
                 rev_rel = (dst_t, f"{dst_t}-{src_t}", src_t)
 
@@ -175,18 +175,9 @@ class PubMedDataset(DGLDataset):
         #     "val": label_nodes_indices[num_train_nodes : num_train_nodes + num_valid_nodes],
         #     "test": label_nodes_indices[num_train_nodes + num_valid_nodes :],
         # }
-
-        ## sklearn split data
-        train_indices, test_indices = train_test_split(label_nodes_indices, test_size=split_ratio["test"], random_state=42)
-        train_indices, val_indices = train_test_split(train_indices, test_size=split_ratio["val"], random_state=42)
-        eva_indices = {
-            "train": train_indices,
-            "val": val_indices,
-            "test": test_indices,
-        }
-        for name, indices in eva_indices.items():
-            mask = generate_mask_tensor(idx2mask(indices, pred_num_nodes))
-            self.graph.nodes[self.predict_ntype].data[name] = mask
+        label_nodes_indices = np.array(label_nodes_indices)
+        mask = generate_mask_tensor(idx2mask(label_nodes_indices, pred_num_nodes))
+        self.graph.nodes[self.predict_ntype].data["total"] = torch.tensor(mask)
 
     def has_cache(self):
         return os.path.exists(os.path.join(self.data_path, "PubMed_dgl_graph.bin"))

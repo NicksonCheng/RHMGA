@@ -220,8 +220,13 @@ class HGraphSAGE(nn.Module):
         mask_rate: float = 0.3,
     ):
         edge_masked = True if status == "edge_recons_encoder" and curr_layer == 1 else False
-        curr_subg = subgs[-curr_layer]
-        src_ntype_feats = subgs_src_ntype_feats[-curr_layer]
+
+        if status == "evaluation":
+            curr_subg = subgs[0]
+            src_ntype_feats = subgs_src_ntype_feats[0]
+        else:
+            curr_subg = subgs[-curr_layer]
+            src_ntype_feats = subgs_src_ntype_feats[-curr_layer]
 
         rels_subgraphs, src_ntype_feats = self.seperate_relation_graph(curr_subg, relations, dst_ntype, src_ntype_feats, edge_masked, mask_rate)
         if curr_layer < self.num_layer:
@@ -241,7 +246,7 @@ class HGraphSAGE(nn.Module):
         start_layer: int,
         relations: list,
         dst_ntype: str,
-        mask_dst_feat: torch.Tensor,
+        dst_feat: torch.Tensor,
         subgs_src_ntype_feats: list,
         status: str = "encoder",
         curr_mask_rate: float = 0.3,
@@ -255,7 +260,7 @@ class HGraphSAGE(nn.Module):
 
         # for dst node feature aggregation
         rels_subgraphs, src_ntype_feats = self.seperate_relation_graph(curr_subg, relations, dst_ntype, src_ntype_feats, edge_masked, curr_mask_rate)
-        z, att_mp = self.layers[curr_layer - 1](rels_subgraphs, dst_ntype, mask_dst_feat, src_ntype_feats, status)
+        z, att_mp = self.layers[curr_layer - 1](rels_subgraphs, dst_ntype, dst_feat, src_ntype_feats, status)
 
         if status == "evaluation":
             return z, att_mp
@@ -277,9 +282,9 @@ class HGraphSAGE(nn.Module):
 
         return z, att_mp
 
-    ###
+        ##
 
-    # z, att_mp = self.neighbor_sampling(subgs, start_layer, relations, dst_ntype, mask_dst_feat, subgs_src_ntype_feats, status, curr_mask_rate)
-    # if status == "decoder":
-    #     z = self.ntypes_decoder_trans[dst_ntype](z)
-    # return z, att_mp
+        z, att_mp = self.neighbor_sampling(subgs, start_layer, relations, dst_ntype, dst_feat, subgs_src_ntype_feats, status, curr_mask_rate)
+        if status == "decoder":
+            z = self.ntypes_decoder_trans[dst_ntype](z)
+        return z, att_mp

@@ -13,6 +13,7 @@ import torch.nn.functional as F
 from dgl.nn.pytorch import MetaPath2Vec
 import numpy as np
 import matplotlib.pyplot as plt
+import networkx as nx
 from dgl.dataloading import DataLoader, MultiLayerFullNeighborSampler, MultiLayerNeighborSampler
 from utils.preprocess_DBLP import DBLP4057Dataset, DBLPFourAreaDataset
 from utils.preprocess_ACM import ACMDataset
@@ -26,7 +27,8 @@ from utils.preprocess_IMDB import IMDbDataset
 from utils.preprocess_Freebase import FreebaseDataset
 from utils.preprocess_Yelp import YelpDataset
 from utils.preprocess_PubMed import PubMedDataset
-from utils.evaluate import score, node_classification_evaluate, node_clustering_evaluate, metapath2vec_train
+from utils.evaluate import LGS_node_classification_evaluate, node_classification_evaluate, node_clustering_evaluate, metapath2vec_train
+
 from utils.utils import load_config, colorize, name_file, visualization
 from models.HGARME import HGARME
 from models.HAN import HAN
@@ -74,6 +76,44 @@ heterogeneous_dataset = {
 }
 
 
+def node_importance(graph):
+    split_idx = [feat.shape[0] for feat in graph.ndata["feat"].values()]
+    nx_g = dgl.to_networkx(graph, node_attrs=["feat"])
+    ntype_node = nx_g.nodes(data=True)
+    num_nodes = graph.num_nodes()
+
+    degree_centrality = nx.degree_centrality(nx_g)
+    betweenness_centrality = nx.betweenness_centrality(nx_g)
+    closeness_centrality = nx.closeness_centrality(nx_g)
+    # eigen_centrality = nx.eigenvector_centrality(nx_g)
+    pagerank = nx.pagerank(nx_g)
+
+    nodes_score = {
+        "degree_centrality": torch.tensor([degree_centrality.get(i, None) for i in range(num_nodes)]),
+        "betweenness_centrality": torch.tensor([betweenness_centrality.get(i, None) for i in range(num_nodes)]),
+        "closeness_centrality": torch.tensor([closeness_centrality.get(i, None) for i in range(num_nodes)]),
+        # "eigen_centrality": torch.tensor([eigen_centrality.get(i, None) for i in range(num_nodes)]),
+        "pagerank": torch.tensor([pagerank.get(i, None) for i in range(num_nodes)]),
+    }
+    nodes_score["importance"] = sum(nodes_score.values())
+    ntype_score = {
+        "degree_centrality": {},
+        "betweenness_centrality": {},
+        "closeness_centrality": {},
+        # "eigen_centrality": {},
+        "pagerank": {},
+        "importance": {},
+    }
+
+    curr_idx = 0
+    for i, ntype in enumerate(graph.ndata["feat"].keys()):
+        for score_name in ntype_score.keys():
+            ntype_score[score_name][ntype] = nodes_score[score_name][curr_idx : curr_idx + split_idx[i]]
+        curr_idx += split_idx[i]
+    torch.save(ntype_score, "freebase_score.pth")
+    return 0
+
+
 def train(args):
     start_t = time.time()
     # torch.cuda.set_device()
@@ -83,6 +123,10 @@ def train(args):
     print("Preprocessing Time taken:", time.time() - start_t, "seconds")
     start_t = time.time()
     relations = data.relations
+
+    # node_imp = node_importance(data[0])
+    # exit()
+
     graph = data[0].to(device_0)
     all_types = list(data._ntypes.values())
     target_type = data.predict_ntype
@@ -107,23 +151,25 @@ def train(args):
         torch.cuda.empty_cache()
 
     num_classes = data.num_classes
-    features = {t: graph.nodes[t].data["feat"].to(device_0) for t in all_types if "feat" in graph.nodes[t].data}
+    features = {t: graph.nodes[t].data["feat"] for t in all_types if "feat" in graph.nodes[t].data}
     train_nids = {ntype: torch.arange(graph.num_nodes(ntype)).to(device_0) for ntype in all_types}
 
     masked_graph = {}
-
     if data.has_label_ratio:
         for ratio in data.label_ratio:
             masked_graph[ratio] = {}
             for split in ["train", "val", "test"]:
                 masked_graph[ratio][split] = graph.nodes[target_type].data[f"{split}_{ratio}"]
-    else:
+    elif args.dataset == "imdb":
 
         for split in ["train", "val", "test"]:
             masked_graph[split] = graph.nodes[target_type].data[split]
+    else:
+        masked_graph["total"] = graph.nodes[target_type].data["total"]
     # print(features)
     # sampler = MultiLayerFullNeighborSampler(2)
-    sampler = MultiLayerNeighborSampler([3, 6, 9])
+    sample_nei = [3, 6, 9, 12, 15]
+    sampler = MultiLayerNeighborSampler(sample_nei[:3])
     dataloader = DataLoader(
         graph,
         train_nids,
@@ -170,7 +216,7 @@ def train(args):
     log_times = datetime.now().strftime("[%Y-%m-%d_%H:%M:%S]")
     file_name = name_file(args, "log", log_times)
     with open(file_name, "a") as log_file:
-        log_file.write(str(args))
+        log_file.write(f"{str(args)}\n")
 
     for epoch in tqdm(range(args.epoches), total=args.epoches, desc=colorize("Epoch Training", "blue")):
         model.train()
@@ -209,7 +255,9 @@ def train(args):
             with open(file_name, "a") as log_file:
 
                 log_file.write(f"Epoches:{epoch}-----------------------------------\n")
-
+                log_file.write(f"Loss:{avg_train_loss}\n")
+                features = {t: graph.nodes[t].data["feat"].to(device_0) for t in all_types if "feat" in graph.nodes[t].data}
+                # enc_feat = features[target_type]
                 enc_feat, att_mp = model.encoder(
                     [graph],
                     1,
@@ -219,6 +267,7 @@ def train(args):
                     [features],
                     "evaluation",
                 )
+                features = {t: graph.nodes[t].data["feat"].cpu() for t in all_types if "feat" in graph.nodes[t].data}
                 enc_feat = enc_feat.detach()
                 if args.task == "classification":
                     if data.has_label_ratio:
@@ -237,8 +286,8 @@ def train(args):
                             log_file.write(
                                 "\t Label Rate:{}% Accuracy:[{:.4f}, {:.4f}] Micro-F1:[{:.4f}, {:.4f}] Macro-F1:[{:.4f}, {:.4f}]  \n".format(
                                     ratio,
-                                    mean["acc"],
-                                    std["acc"],
+                                    mean["auc_roc"],
+                                    std["auc_roc"],
                                     mean["micro_f1"],
                                     std["micro_f1"],
                                     mean["macro_f1"],
@@ -247,21 +296,37 @@ def train(args):
                             )
 
                     else:
-                        max_acc, max_micro, max_macro = node_classification_evaluate(
-                            device_1, enc_feat, args, num_classes, target_type_labels, masked_graph, data.multilabel
-                        )
+                        if args.dataset == "imdb":
+                            mean, std = node_classification_evaluate(
+                                device_1, enc_feat, args, num_classes, target_type_labels, masked_graph, data.multilabel
+                            )
+                        else:
+                            mean, std = LGS_node_classification_evaluate(
+                                device_1, enc_feat, args, num_classes, target_type_labels, masked_graph, data.multilabel
+                            )
                         if not performance:
                             performance = {"Acc": [], "Micro-F1": [], "Macro-F1": []}
-                        performance["Acc"].append(max_acc)
-                        performance["Micro-F1"].append(max_micro)
-                        performance["Macro-F1"].append(max_macro)
+                        # performance["Acc"].append(mean["auc_roc"])
+                        performance["Micro-F1"].append(mean["micro_f1"])
+                        performance["Macro-F1"].append(mean["macro_f1"])
                         log_file.write(
-                            "\t [Accuracy:{:4f} Micro-F1:{:4f} Macro-F1:{:4f}  ]\n".format(
-                                max_acc,
-                                max_micro,
-                                max_macro,
+                            "\t Micro-F1:[{:.4f}, {:.4f}] Macro-F1:[{:.4f}, {:.4f}]  \n".format(
+                                mean["micro_f1"],
+                                std["micro_f1"],
+                                mean["macro_f1"],
+                                std["macro_f1"],
                             )
                         )
+                        # log_file.write(
+                        #     "\t Accuracy:[{:.4f}, {:.4f}] Micro-F1:[{:.4f}, {:.4f}] Macro-F1:[{:.4f}, {:.4f}]  \n".format(
+                        #         mean["auc_roc"],
+                        #         std["auc_roc"],
+                        #         mean["micro_f1"],
+                        #         std["micro_f1"],
+                        #         mean["macro_f1"],
+                        #         std["macro_f1"],
+                        #     )
+                        # )
                 elif args.task == "clustering":
                     nmi_list, ari_list = [], []
 

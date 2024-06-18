@@ -3,7 +3,7 @@ import torch.nn as nn
 from models.HAN import HAN
 from models.SRN import Schema_Relation_Network
 from models.HGraphSAGE import HGraphSAGE
-from utils.evaluate import cosine_similarity, mse
+from models.loss_func import cosine_similarity, mse
 from functools import partial
 from dgl.transforms import DropEdge
 from collections import Counter
