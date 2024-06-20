@@ -11,7 +11,7 @@ import traceback
 import datetime
 import dgl
 import copy
-
+import math
 
 class MultiLayerPerception(nn.Module):
     def __init__(self, input_dim, output_dim):
@@ -83,8 +83,8 @@ class HGARME(nn.Module):
         self.ntype_in_dim = ntype_in_dim
         self.target_type = target_type
         self.all_types = all_types
-        # self.mask_rate = args.mask_rate
-        self.mask_rate = args.dynamic_mask_rate
+        self.mask_rate = args.mask_rate
+        #self.mask_rate = args.dynamic_mask_rate
         self.hidden_dim = args.num_hidden
         self.num_layer = args.num_layer
         self.num_heads = args.num_heads
@@ -163,8 +163,8 @@ class HGARME(nn.Module):
 
     def forward(self, subgs, relations, epoch=None):
         try:
-            node_feature_recons_loss = 0
-            adjmatrix_recons_loss = 0
+            node_feature_recons_loss = 0.0
+            adjmatrix_recons_loss = 0.0
             ## Calculate node feature reconstruction loss
             if self.feat_recons:
                 node_feature_recons_loss = self.mask_attribute_reconstruction(subgs, relations, epoch)
@@ -213,10 +213,12 @@ class HGARME(nn.Module):
                 raise NotImplementedError
 
     def mask_edge_reconstruction(self, subgs, relations, epoch=None):
+        
         ### src node should be encode to reconstruct adjacent matrix, rev relation should do same thing again
         ### we use dst-based graph's dst_node and src-based graph's dst_node to reconstruct adjacent matrix
         ### But if there are connection on same type of node, we just use dst_based_subg to reconstruct adjacent matrix
         all_adjmatrix_recons_loss = 0.0
+        num_loss = 0
         curr_mask_rate = self.get_mask_rate(self.mask_rate, epoch=epoch)
 
         src_based_subg = subgs[-2]
@@ -227,7 +229,7 @@ class HGARME(nn.Module):
 
         dst_based_embs = {}
         src_based_embs = {}
-        num_loss = 0
+       
 
         for use_ntype, use_x in dst_based_x.items():
             src_x = [g.srcdata["feat"] for g in subgs]
@@ -285,6 +287,7 @@ class HGARME(nn.Module):
 
         ntype_dst_x = {}
 
+        ## if node exist sample zero node, we don't use it(small batch size problem)
         ntype_dst_x = {ntype: feat for ntype, feat in subgs[-1].dstdata["feat"].items() if feat.shape[0] > 0}
         ## only target node feature reconstruction
         if not self.all_feat_recons and self.target_type in ntype_dst_x:
@@ -294,6 +297,10 @@ class HGARME(nn.Module):
         ## mask node feature
         ntype_use_dst_x, (ntypes_mask_nodes, ntypes_keep_nodes) = self.encode_mask_noise(subgs, ntype_dst_x, curr_mask_rate)
 
+        # if every node masking we just not mask node instead(small batch size problem)
+        for ntype,feat in ntype_use_dst_x.items():
+            if(feat.shape[0] == 0):
+                ntype_use_dst_x[ntype]=ntype_dst_x[ntype]
         for use_ntype, use_x in ntype_use_dst_x.items():
             src_x = [g.srcdata["feat"] for g in subgs]
 
@@ -310,9 +317,21 @@ class HGARME(nn.Module):
             elif self.decoder_type == "MLP":
                 dec_rep = self.decoder(hidden_rep)
             ## calculate all type nodes feature reconstruction
-            ntype_loss = self.criterion(ntype_dst_x[use_ntype][mask_nodes], dec_rep[mask_nodes])
+            if(mask_nodes.shape[0]==0):
+                ntype_loss = self.criterion(ntype_dst_x[use_ntype], dec_rep)
+            else:    
+                ntype_loss = self.criterion(ntype_dst_x[use_ntype][mask_nodes], dec_rep[mask_nodes])
+
+            if(math.isnan(ntype_loss)):
+                num_nodes=ntype_dst_x[use_ntype].shape[0]
+                num_mask_nodes = int(curr_mask_rate * num_nodes)
+                print(num_nodes)
+                print(curr_mask_rate)
+                print(num_mask_nodes)
+                print(mask_nodes)
+                print(dec_rep[mask_nodes])
             all_node_feature_recons_loss += ntype_loss
-        # print(all_node_feature_recons_loss)
+
         return all_node_feature_recons_loss / len(ntype_use_dst_x)
 
     def encode_mask_noise(self, graph, ntype_x, mask_rate):

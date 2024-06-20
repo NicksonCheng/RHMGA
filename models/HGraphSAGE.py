@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import dgl
 import dgl.function as fn
-
+import math
 from dgl.nn.pytorch.conv import GATConv
 
 # from models.gat import GATConv
@@ -138,7 +138,13 @@ class Schema_Relation_Network(nn.Module):
         ## semantic aggregation with all relation-based embedding
         ## prevent only one dst node or only one relation
         z_r = torch.stack(list(z_r.values()), dim=1)
+        
         z, att_mp = self.semantic_attention(z_r)
+
+
+        # if(math.isnan(z)):
+        #     print(z)
+        #     print(z_r)
 
         return z, att_mp
 
@@ -241,17 +247,8 @@ class HGraphSAGE(nn.Module):
                 src_ntype_feats[ntype], att_mp = self.neighbor_sampling(subgs, curr_layer + 1, relations, ntype, feat, subgs_src_ntype_feats, status)
 
             subgs_src_ntype_feats[-curr_layer] = src_ntype_feats
-        try:
-            dst_feat, att_mp = self.layers[curr_layer - 1](rels_subgraphs, dst_ntype, dst_feat, src_ntype_feats, status)
-        except RuntimeError as e:
-            print(e)
-            # print("--------------------")
-            # print(dst_ntype, dst_feat)
-            # print(curr_layer)
-            # print(curr_subg)
-            # for ntype, feat in src_ntype_feats.items():
-            #     print(ntype, feat)
-            # print("--------------------")
+
+        dst_feat, att_mp = self.layers[curr_layer - 1](rels_subgraphs, dst_ntype, dst_feat, src_ntype_feats, status)
         return dst_feat, att_mp
 
     def forward(
@@ -267,34 +264,34 @@ class HGraphSAGE(nn.Module):
     ):
 
         ### this code block is temporary for 1-layer SRN
-        # curr_layer = start_layer
-        # edge_masked = True if status == "edge_recons_encoder" and curr_layer == 1 else False
-        # curr_subg = subgs[-curr_layer]
-        # src_ntype_feats = subgs_src_ntype_feats[-curr_layer]
+        curr_layer = start_layer
+        edge_masked = True if status == "edge_recons_encoder" and curr_layer == 1 else False
+        curr_subg = subgs[-curr_layer]
+        src_ntype_feats = subgs_src_ntype_feats[-curr_layer]
 
-        # # for dst node feature aggregation
-        # rels_subgraphs, src_ntype_feats = self.seperate_relation_graph(curr_subg, relations, dst_ntype, src_ntype_feats, edge_masked, curr_mask_rate)
-        # z, att_mp = self.layers[curr_layer - 1](rels_subgraphs, dst_ntype, dst_feat, src_ntype_feats, status)
+        # for dst node feature aggregation
+        rels_subgraphs, src_ntype_feats = self.seperate_relation_graph(curr_subg, relations, dst_ntype, src_ntype_feats, edge_masked, curr_mask_rate)
+        z, att_mp = self.layers[curr_layer - 1](rels_subgraphs, dst_ntype, dst_feat, src_ntype_feats, status)
 
-        # if status == "evaluation":
-        #     return z, att_mp
-        # # for src node(n layer src n+1 layer dst) feature aggregation
-        # curr_layer = curr_layer + 1
-        # curr_subg = subgs[-curr_layer]
-        # curr_subg_dst_feats = curr_subg.dstdata["feat"]
-        # curr_subg_src_feats = subgs_src_ntype_feats[-curr_layer]
-        # for ntype, feat in curr_subg_dst_feats.items():
-        #     rels_subgraphs, use_src_feats = self.seperate_relation_graph(curr_subg, relations, ntype, curr_subg_src_feats, False, curr_mask_rate)
-        #     src_ntype_feats[ntype], att_mp = self.layers[curr_layer - 1](rels_subgraphs, ntype, feat, use_src_feats, status)
+        if status == "evaluation":
+            return z, att_mp
+        # for src node(n layer src n+1 layer dst) feature aggregation
+        curr_layer = curr_layer + 1
+        curr_subg = subgs[-curr_layer]
+        curr_subg_dst_feats = curr_subg.dstdata["feat"]
+        curr_subg_src_feats = subgs_src_ntype_feats[-curr_layer]
+        for ntype, feat in curr_subg_dst_feats.items():
+            rels_subgraphs, use_src_feats = self.seperate_relation_graph(curr_subg, relations, ntype, curr_subg_src_feats, False, curr_mask_rate)
+            src_ntype_feats[ntype], att_mp = self.layers[curr_layer - 1](rels_subgraphs, ntype, feat, use_src_feats, status)
 
-        # # back to first layer
-        # curr_layer = curr_layer - 1
-        # subgs_src_ntype_feats[-curr_layer] = src_ntype_feats
+        # back to first layer
+        curr_layer = curr_layer - 1
+        subgs_src_ntype_feats[-curr_layer] = src_ntype_feats
 
-        # if status == "decoder" or status == "edge_recons_decoder":
-        #     z = self.ntypes_decoder_trans[dst_ntype](z)
+        if status == "decoder" or status == "edge_recons_decoder":
+            z = self.ntypes_decoder_trans[dst_ntype](z)
 
-        # return z, att_mp
+        return z, att_mp
 
         ###
         try:

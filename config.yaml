@@ -115,7 +115,7 @@ heco_freebase:
   num_out_heads: 1
   num_hidden: 512
   lr: 0.001
-  mask_rate: 0.4
+  mask_rate: 0.5
   dropout: 0.4
   encoder: "HGraphSAGE"
   decoder: "HGraphSAGE"
