@@ -221,14 +221,14 @@ class HGARME(nn.Module):
 
         src_based_subg = subgs[-2]
         dst_based_subg = subgs[-1]
-        ## this dict contain the dst src dec_rep pair to reconstruct the adjacent matrix
 
-        dst_based_x = dst_based_subg.dstdata["feat"]
-        src_based_x = src_based_subg.dstdata["feat"]
+        dst_based_x = {ntype: feat for ntype, feat in dst_based_subg.dstdata["feat"].items() if feat.shape[0] > 0}
+        src_based_x = {ntype: feat for ntype, feat in src_based_subg.dstdata["feat"].items() if feat.shape[0] > 0}
+
         dst_based_embs = {}
         src_based_embs = {}
         num_loss = 0
-        # print(dst_based_subg[("Gene", "Gene-Gene", "Gene")])
+
         for use_ntype, use_x in dst_based_x.items():
             src_x = [g.srcdata["feat"] for g in subgs]
             if not self.all_edge_recons and use_ntype != self.target_type:
@@ -236,6 +236,8 @@ class HGARME(nn.Module):
 
             dst_enc_rep, att_mp = self.encoder(subgs, 1, relations, use_ntype, use_x, src_x, "edge_recons_encoder", curr_mask_rate=curr_mask_rate)
             dst_based_embs[use_ntype] = self.encoder_to_decoder(dst_enc_rep)
+
+            ## for GNN decoder, but performance is not good
             # src_ntype_rep=[self.edge_recons_encoder_to_decoder[ntype][idx](enc_rep) for idx,enc_rep in enumerate(src_ntype_enc_rep)]
             # dst_based_hidden_rep = self.encoder_to_decoder(dst_enc_rep)
 
@@ -254,37 +256,47 @@ class HGARME(nn.Module):
 
         for rel_tuple in relations:
             src_node, rel, dst_node = rel_tuple
-            origin_adj_matrix = dst_based_subg[rel].adj()
-
-            origin_adj_tensor = origin_adj_matrix.to_dense()
+            if src_node not in src_based_embs or dst_node not in dst_based_embs:
+                continue
+            origin_adj_matrix = None
             if src_node == dst_node:
-                src_dec_rep = src_based_embs[dst_node]
-                recon_adj_matrix = torch.mm(src_dec_rep, src_dec_rep.T)
+                num_src_node = dst_based_subg.num_src_nodes(dst_node)
+                num_dst_node = dst_based_subg.num_dst_nodes(dst_node)
+                src, dst = dst_based_subg[rel].edges()
+                origin_adj_matrix = torch.zeros(num_src_node, num_dst_node, device=src.device)
+                origin_adj_matrix[src, dst] = 1
             else:
-                src_dec_rep = src_based_embs[src_node]
-                dst_dec_rep = dst_based_embs[dst_node]
-                recon_adj_matrix = torch.mm(src_dec_rep, dst_dec_rep.T)
+                origin_adj_matrix = dst_based_subg[rel].adj()
+            origin_adj_tensor = origin_adj_matrix.to_dense()
+
+            src_dec_rep = src_based_embs[src_node]
+            dst_dec_rep = dst_based_embs[dst_node]
+            recon_adj_matrix = torch.mm(src_dec_rep, dst_dec_rep.T)
+
             rel_pair_loss = self.criterion(origin_adj_tensor, recon_adj_matrix)
             all_adjmatrix_recons_loss += rel_pair_loss
             num_loss += 1
         return all_adjmatrix_recons_loss / num_loss
 
     def mask_attribute_reconstruction(self, subgs, relations, epoch=None):
-        ### only used dst node to do attribute reconstruction
-        ## x represent all node features
-        ## use_x represent target predicted node's features
 
         all_node_feature_recons_loss = 0.0
         curr_mask_rate = self.get_mask_rate(self.mask_rate, epoch=epoch)
 
-        ntype_dst_x = subgs[-1].dstdata["feat"]
+        ntype_dst_x = {}
 
-        if not self.all_feat_recons:
+        ntype_dst_x = {ntype: feat for ntype, feat in subgs[-1].dstdata["feat"].items() if feat.shape[0] > 0}
+        ## only target node feature reconstruction
+        if not self.all_feat_recons and self.target_type in ntype_dst_x:
             ntype_dst_x = {self.target_type: ntype_dst_x[self.target_type]}
+        if len(ntype_dst_x) == 0:
+            return 0.0
+        ## mask node feature
         ntype_use_dst_x, (ntypes_mask_nodes, ntypes_keep_nodes) = self.encode_mask_noise(subgs, ntype_dst_x, curr_mask_rate)
 
         for use_ntype, use_x in ntype_use_dst_x.items():
             src_x = [g.srcdata["feat"] for g in subgs]
+
             mask_nodes = ntypes_mask_nodes[use_ntype]
 
             enc_rep, att_mp = self.encoder(subgs, 1, relations, use_ntype, use_x, src_x, "encoder")

@@ -223,24 +223,25 @@ def LGS_node_classification_evaluate(device, enc_feat, args, num_classes, labels
     micro_f1s = []
     macro_f1s = []
     auc_roc_list = []
-    for train_index, test_index in skf.split(enc_feat_dict, labels_dict):
-        clf = LinearSVC(random_state=seed, max_iter=3000, dual="auto")
-        clf.fit(enc_feat_dict[train_index], labels_dict[train_index])
-        pred = clf.predict(enc_feat_dict[test_index])
 
-        macro_f1s.append(f1_score(labels_dict[test_index], pred, average="macro"))
-        micro_f1s.append(f1_score(labels_dict[test_index], pred, average="micro"))
-    mean = {
-        "micro_f1": np.mean(micro_f1s),
-        "macro_f1": np.mean(macro_f1s),
-    }
-    std = {
-        "micro_f1": np.std(micro_f1s),
-        "macro_f1": np.std(macro_f1s),
-    }
-    return mean, std
+    # for train_index, test_index in skf.split(enc_feat_dict, labels_dict):
+    #     clf = LinearSVC(random_state=seed, max_iter=3000, dual="auto")
+    #     clf.fit(enc_feat_dict[train_index], labels_dict[train_index])
+    #     pred = clf.predict(enc_feat_dict[test_index])
 
-    for train_index, test_index in skf.split(enc_feat_dict, labels_dict):
+    #     macro_f1s.append(f1_score(labels_dict[test_index], pred, average="macro"))
+    #     micro_f1s.append(f1_score(labels_dict[test_index], pred, average="micro"))
+    # mean = {
+    #     "micro_f1": np.mean(micro_f1s),
+    #     "macro_f1": np.mean(macro_f1s),
+    # }
+    # std = {
+    #     "micro_f1": np.std(micro_f1s),
+    #     "macro_f1": np.std(macro_f1s),
+    # }
+    # return mean, std
+    tqdm_bar = tqdm(total=skf.get_n_splits(enc_feat_dict, labels_dict), position=0, desc=colorize("Evaluating", "green"))
+    for i, (train_index, test_index) in enumerate(skf.split(enc_feat_dict, labels_dict)):
         classifier = MLP(num_dim=enc_feat.shape[-1], num_classes=num_classes).to(device)
         optimizer = optim.Adam(classifier.parameters(), lr=args.eva_lr, weight_decay=args.eva_wd)
         test_accs = []
@@ -251,7 +252,7 @@ def LGS_node_classification_evaluate(device, enc_feat, args, num_classes, labels
         enc_feat_dict = enc_feat_dict.to(device)
         labels_dict = labels_dict.to(device)
 
-        for epoches in tqdm(range(args.eva_epoches), position=0, desc=colorize("Evaluating", "green")):
+        for epoches in range(args.eva_epoches):
             classifier.train()
 
             train_output = classifier(multilabel, enc_feat_dict[train_index])
@@ -288,6 +289,9 @@ def LGS_node_classification_evaluate(device, enc_feat, args, num_classes, labels
             average=None if multilabel else "macro",
         )
         auc_roc_list.append(auc_score)
+
+        tqdm_bar.update(1)
+    tqdm_bar.close()
     mean = {"acc": np.mean(accs), "micro_f1": np.mean(micro_f1s), "macro_f1": np.mean(macro_f1s), "auc_roc": np.mean(auc_roc_list)}
     std = {"acc": np.std(accs), "micro_f1": np.std(micro_f1s), "macro_f1": np.std(macro_f1s), "auc_roc": np.std(auc_roc_list)}
     return mean, std

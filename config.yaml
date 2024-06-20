@@ -134,7 +134,7 @@ heco_freebase:
 PubMed:
   dataset: "PubMed"
   epoches: 500
-  batch_size: 64
+  batch_size: 128
   eva_interval: 10
   eva_epoches: 200
   num_layer: 3

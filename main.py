@@ -168,7 +168,7 @@ def train(args):
         masked_graph["total"] = graph.nodes[target_type].data["total"]
     # print(features)
     # sampler = MultiLayerFullNeighborSampler(2)
-    sample_nei = [3, 6, 9, 12, 15]
+    sample_nei = [3, 5, 7, 11, 13]
     sampler = MultiLayerNeighborSampler(sample_nei[:3])
     dataloader = DataLoader(
         graph,
@@ -304,6 +304,7 @@ def train(args):
                             mean, std = LGS_node_classification_evaluate(
                                 device_1, enc_feat, args, num_classes, target_type_labels, masked_graph, data.multilabel
                             )
+
                         if not performance:
                             performance = {"Acc": [], "Micro-F1": [], "Macro-F1": []}
                         # performance["Acc"].append(mean["auc_roc"])
