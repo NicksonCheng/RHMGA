@@ -222,7 +222,7 @@ class FreebaseDataset(DGLDataset):
             self.graph.nodes[self.predict_ntype].data[name] = mask
 
     def has_cache(self):
-        return False
+        # return False
         return os.path.exists(os.path.join(self.data_path, self.g_file))
 
     def __getitem__(self, i):

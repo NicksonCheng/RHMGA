@@ -77,21 +77,27 @@ class SemanticAttention(nn.Module):
 class Schema_Relation_Network(nn.Module):
     def __init__(
         self,
-        relations,
-        hidden_dim,
-        weight_T,
+        relations: list,
+        in_dim: int,
+        out_dim: int | dict,
+        weight_T: nn.ModuleDict,
+        num_heads: int,
+        status: str,
     ):
         super(Schema_Relation_Network, self).__init__()
-        self.hidden_dim = hidden_dim
+        self.in_dim = in_dim
+        self.out_dim = out_dim
         self.weight_T = weight_T
+        self.num_heads = num_heads
 
+        ## project all type of node into same dimension
         self.gats = nn.ModuleDict(
             {
                 # torch_geometric GATConv(in_channels=in_dim,out_channels=hidden_dim,heads=num_heads,dropout=dropout)
                 rel_tuple[1]: GATConv(
-                    in_feats=self.hidden_dim,
-                    out_feats=self.hidden_dim,
-                    num_heads=1,
+                    in_feats=self.in_dim,
+                    out_feats=self.out_dim,
+                    num_heads=self.num_heads,
                     feat_drop=0.1,
                     attn_drop=0.4,
                     activation=F.elu,
@@ -102,7 +108,7 @@ class Schema_Relation_Network(nn.Module):
             }
         )
 
-        self.semantic_attention = SemanticAttention(in_dim=hidden_dim)
+        self.semantic_attention = SemanticAttention(in_dim=out_dim * num_heads)
 
     def forward(
         self,
@@ -115,36 +121,29 @@ class Schema_Relation_Network(nn.Module):
         ## Linear Transformation to same dimension
         neighbors_feat = {}
 
-        if dst_feat.shape[1] != self.hidden_dim:
-            dst_feat = self.weight_T[dst_ntype](dst_feat)
+        # if dst_feat.shape[1] != self.hidden_dim * self.num_heads:
+        #     dst_feat = self.weight_T[dst_ntype](dst_feat)
 
-        for ntype, feat in src_feat.items():
-            if feat.shape[1] != self.hidden_dim:
-                neighbors_feat[ntype] = self.weight_T[ntype](feat)
-            else:
-                neighbors_feat[ntype] = feat
+        # for ntype, feat in src_feat.items():
+        #     if feat.shape[1] != self.hidden_dim:
+        #         neighbors_feat[ntype] = self.weight_T[ntype](feat)
+        #     else:
+        #         neighbors_feat[ntype] = feat
 
         ## aggregate the neighbor based on the relation
         z_r = {}
-
         for rels_tuple, rel_graph in rels_subgraphs.items():
             src_ntype = rels_tuple[0]
             rel = rels_tuple[1]
             # z_r[rel] = self.gats[rel](rel_graph, neighbors_feat[src_ntype], dst_feat)
 
-            z_r[rel] = self.gats[rel](rel_graph, (neighbors_feat[src_ntype], dst_feat)).squeeze(dim=1)
+            z_r[rel] = self.gats[rel](rel_graph, (src_feat[src_ntype], dst_feat)).flatten(1)
             # print(z_r[rel].shape)
 
         ## semantic aggregation with all relation-based embedding
         ## prevent only one dst node or only one relation
         z_r = torch.stack(list(z_r.values()), dim=1)
-        
         z, att_mp = self.semantic_attention(z_r)
-
-
-        # if(math.isnan(z)):
-        #     print(z)
-        #     print(z_r)
 
         return z, att_mp
 
@@ -152,31 +151,41 @@ class Schema_Relation_Network(nn.Module):
 class HGraphSAGE(nn.Module):
     def __init__(
         self,
-        relations,
-        hidden_dim,
-        ntype_out_dim,
-        num_layer,
-        weight_T,
-        status,
+        relations: list,
+        in_dim: int,
+        hidden_dim: int,
+        out_dim: int | dict,
+        num_layer: int,
+        num_heads: int,
+        num_out_heads: int,
+        dropout: float,
+        weight_T: nn.ModuleDict,
+        status: str,
     ):
         super(HGraphSAGE, self).__init__()
+        self.in_dim = in_dim
         self.hidden_dim = hidden_dim
+        self.out_dim = out_dim
         self.num_layer = num_layer
         self.weight_T = weight_T
         self.layers = nn.ModuleList()
 
-        for i in range(3):
-            self.layers.append(Schema_Relation_Network(relations, hidden_dim, weight_T))
-        ## for edge reconstruction src_based feature
-        # if self.num_layer == 1:
-        #     self.layers.append(Schema_Relation_Network(relations, hidden_dim, weight_T))
+        ## because this is HGraphSAGE, the head,dimension problem should be reverse compared to tradictional multilayer GAT
+        if num_layer == 1:
+            self.layers.append(Schema_Relation_Network(relations, self.in_dim, self.out_dim, weight_T, num_out_heads, status))
+        else:
+            self.layers.append(Schema_Relation_Network(relations, self.hidden_dim * num_heads, self.out_dim, weight_T, num_out_heads, status))
+            for i in range(1, num_layer - 1):
+                self.layers.append(Schema_Relation_Network(relations, self.hidden_dim * num_heads, self.hidden_dim, weight_T, num_heads, status))
+            self.layers.append(Schema_Relation_Network(relations, self.in_dim, self.hidden_dim, weight_T, num_heads, status))
 
-        ## out_dim has different type of nodes
-        if status == "decoder":
-            self.ntypes_decoder_trans = nn.ModuleDict({ntype: nn.Linear(hidden_dim, out_dim) for ntype, out_dim in ntype_out_dim.items()})
+        ## this is for src_feat encoder
+        if status == "encoder":
+            extra_in_dim = self.in_dim if num_layer == 1 else self.hidden_dim * num_heads
+            self.layers.append(Schema_Relation_Network(relations, extra_in_dim, self.hidden_dim, weight_T, num_heads, status))
 
-    ## filte non_zero in_degree dst node
-    def mask_edges_func(self, rels_subg, mask_rate=0.3):
+    ## filter non_zero in_degree dst node
+    def mask_edges_func(self, rels_subg: DGLBlock, mask_rate: float = 0.3):
         # src_nodes, dst_nodes = rels_subg.edges()
         # in_degrees = rels_subg.in_degrees()
 
@@ -227,7 +236,7 @@ class HGraphSAGE(nn.Module):
         dst_feat: torch.Tensor,
         subgs_src_ntype_feats: list,
         status: str,
-        mask_rate: float = 0.3,
+        curr_mask_rate: float = 0.3,
     ):
 
         att_mp = None
@@ -240,15 +249,33 @@ class HGraphSAGE(nn.Module):
             curr_subg = subgs[-curr_layer]
             src_ntype_feats = subgs_src_ntype_feats[-curr_layer]
 
-        rels_subgraphs, src_ntype_feats = self.seperate_relation_graph(curr_subg, relations, dst_ntype, src_ntype_feats, edge_masked, mask_rate)
+        rels_subgraphs, use_src_ntype_feats = self.seperate_relation_graph(
+            curr_subg, relations, dst_ntype, src_ntype_feats, edge_masked, curr_mask_rate
+        )
         if curr_layer < self.num_layer:
             ## layer n-1 dst feat will be layer n src feat
-            for ntype, feat in src_ntype_feats.items():
-                src_ntype_feats[ntype], att_mp = self.neighbor_sampling(subgs, curr_layer + 1, relations, ntype, feat, subgs_src_ntype_feats, status)
+            for ntype, feat in use_src_ntype_feats.items():
+                use_src_ntype_feats[ntype], att_mp = self.neighbor_sampling(
+                    subgs, curr_layer + 1, relations, ntype, feat, subgs_src_ntype_feats, status
+                )
 
-            subgs_src_ntype_feats[-curr_layer] = src_ntype_feats
+        dst_feat, att_mp = self.layers[curr_layer - 1](rels_subgraphs, dst_ntype, dst_feat, use_src_ntype_feats, status)
 
-        dst_feat, att_mp = self.layers[curr_layer - 1](rels_subgraphs, dst_ntype, dst_feat, src_ntype_feats, status)
+        if curr_layer == self.num_layer and status == "encoder":
+            ## need to update the last layer src_feat
+            next_layer = curr_layer + 1
+            next_subg = subgs[-next_layer]
+
+            next_subg_src_feats = subgs_src_ntype_feats[-next_layer]
+            next_subg_dst_feats = subgs_src_ntype_feats[-curr_layer]
+            for ntype, feat in next_subg_dst_feats.items():
+                next_rels_subgraphs, use_src_ntype_feats = self.seperate_relation_graph(
+                    next_subg, relations, ntype, next_subg_src_feats, False, curr_mask_rate
+                )
+                ## current layer's src feat will be next layer's dst feat
+                subgs_src_ntype_feats[-curr_layer][ntype], att_mp = self.layers[next_layer - 1](
+                    next_rels_subgraphs, ntype, feat, use_src_ntype_feats, status
+                )
         return dst_feat, att_mp
 
     def forward(
@@ -264,41 +291,35 @@ class HGraphSAGE(nn.Module):
     ):
 
         ### this code block is temporary for 1-layer SRN
-        curr_layer = start_layer
-        edge_masked = True if status == "edge_recons_encoder" and curr_layer == 1 else False
-        curr_subg = subgs[-curr_layer]
-        src_ntype_feats = subgs_src_ntype_feats[-curr_layer]
+        # curr_layer = start_layer
+        # edge_masked = True if status == "edge_recons_encoder" and curr_layer == 1 else False
+        # curr_subg = subgs[-curr_layer]
+        # src_ntype_feats = subgs_src_ntype_feats[-curr_layer]
 
-        # for dst node feature aggregation
-        rels_subgraphs, src_ntype_feats = self.seperate_relation_graph(curr_subg, relations, dst_ntype, src_ntype_feats, edge_masked, curr_mask_rate)
-        z, att_mp = self.layers[curr_layer - 1](rels_subgraphs, dst_ntype, dst_feat, src_ntype_feats, status)
+        # # for dst node feature aggregation
+        # rels_subgraphs, src_ntype_feats = self.seperate_relation_graph(curr_subg, relations, dst_ntype, src_ntype_feats, edge_masked, curr_mask_rate)
+        # z, att_mp = self.layers[curr_layer - 1](rels_subgraphs, dst_ntype, dst_feat, src_ntype_feats, status)
 
-        if status == "evaluation":
-            return z, att_mp
-        # for src node(n layer src n+1 layer dst) feature aggregation
-        curr_layer = curr_layer + 1
-        curr_subg = subgs[-curr_layer]
-        curr_subg_dst_feats = curr_subg.dstdata["feat"]
-        curr_subg_src_feats = subgs_src_ntype_feats[-curr_layer]
-        for ntype, feat in curr_subg_dst_feats.items():
-            rels_subgraphs, use_src_feats = self.seperate_relation_graph(curr_subg, relations, ntype, curr_subg_src_feats, False, curr_mask_rate)
-            src_ntype_feats[ntype], att_mp = self.layers[curr_layer - 1](rels_subgraphs, ntype, feat, use_src_feats, status)
+        # if status == "evaluation":
+        #     return z, att_mp
+        # # for src node(n layer src n-1 layer dst) feature aggregation
+        # curr_layer += 1
+        # curr_subg = subgs[-curr_layer]
+        # curr_subg_dst_feats = curr_subg.dstdata["feat"]
+        # curr_subg_src_feats = subgs_src_ntype_feats[-curr_layer]
+        # for ntype, feat in curr_subg_dst_feats.items():
+        #     rels_subgraphs, use_src_feats = self.seperate_relation_graph(curr_subg, relations, ntype, curr_subg_src_feats, False, curr_mask_rate)
+        #     src_ntype_feats[ntype], att_mp = self.layers[curr_layer - 1](rels_subgraphs, ntype, feat, use_src_feats, status)
 
-        # back to first layer
-        curr_layer = curr_layer - 1
-        subgs_src_ntype_feats[-curr_layer] = src_ntype_feats
+        # # back to first layer
+        # curr_layer -= 1
+        # subgs_src_ntype_feats[-curr_layer] = src_ntype_feats
 
-        if status == "decoder" or status == "edge_recons_decoder":
-            z = self.ntypes_decoder_trans[dst_ntype](z)
+        # if status == "decoder" or status == "edge_recons_decoder":
+        #     z = self.ntypes_decoder_trans[dst_ntype](z)
 
-        return z, att_mp
+        # return z, att_mp
 
         ###
-        try:
-            z, att_mp = self.neighbor_sampling(subgs, start_layer, relations, dst_ntype, dst_feat, subgs_src_ntype_feats, status, curr_mask_rate)
-            if status == "decoder":
-                z = self.ntypes_decoder_trans[dst_ntype](z)
-            return z, att_mp
-        except RuntimeError as e:
-            print(dst_ntype)
-            # print(e)
+        z, att_mp = self.neighbor_sampling(subgs, start_layer, relations, dst_ntype, dst_feat, subgs_src_ntype_feats, status, curr_mask_rate)
+        return z, att_mp

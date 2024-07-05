@@ -12,7 +12,7 @@ from sklearn.model_selection import train_test_split, StratifiedKFold
 
 
 class PubMedDataset(DGLDataset):
-    def __init__(self, url=None, raw_dir=None, save_dir=None, force_reload=False, verbose=False):
+    def __init__(self, reverse_edge, url=None, raw_dir=None, save_dir=None, force_reload=False, verbose=False):
         self.graph = HeteroData()
         self._ntypes = {"G": "Gene", "D": "Disease", "C": "Chemical", "S": "Species"}
         self._relations = [
@@ -100,6 +100,7 @@ class PubMedDataset(DGLDataset):
 
             node_dict[ntype]["id"] = sort_id
             node_dict[ntype]["feat"] = torch.tensor(sort_feat)
+
         self.graph = dgl.heterograph(self._read_edges(node_dict))
         self._read_feats_labels(node_dict)
 
@@ -117,22 +118,22 @@ class PubMedDataset(DGLDataset):
         for s, d, t in tqdm(zip(src, dst, etype), total=len(src)):
             rel_tuple = self._relations[int(t)]
             src_t, rel, dst_t = rel_tuple
-            s = node_dict[src_t]["id"].index(s)
-            d = node_dict[dst_t]["id"].index(d)
+            map_s_id = node_dict[src_t]["id"].index(s)
+            map_d_id = node_dict[dst_t]["id"].index(d)
             if rel_tuple not in edges:
-                edges[rel_tuple] = ([s], [d])
+                edges[rel_tuple] = ([map_s_id], [map_d_id])
             else:
-                edges[rel_tuple][0].append(s)
-                edges[rel_tuple][1].append(d)
+                edges[rel_tuple][0].append(map_s_id)
+                edges[rel_tuple][1].append(map_d_id)
             if src_t != dst_t:
                 ## self-defined rev relation
                 rev_rel = (dst_t, f"{dst_t}-{src_t}", src_t)
 
                 if rev_rel not in edges:
-                    edges[rev_rel] = ([d], [s])
+                    edges[rev_rel] = ([map_d_id], [map_s_id])
                 else:
-                    edges[rev_rel][0].append(d)
-                    edges[rev_rel][1].append(s)
+                    edges[rev_rel][0].append(map_d_id)
+                    edges[rev_rel][1].append(map_s_id)
 
         return edges
 
@@ -180,6 +181,7 @@ class PubMedDataset(DGLDataset):
         self.graph.nodes[self.predict_ntype].data["total"] = torch.tensor(mask)
 
     def has_cache(self):
+        #return False
         return os.path.exists(os.path.join(self.data_path, "PubMed_dgl_graph.bin"))
 
     def __getitem__(self, i):

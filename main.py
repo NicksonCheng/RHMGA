@@ -14,6 +14,7 @@ from dgl.nn.pytorch import MetaPath2Vec
 import numpy as np
 import matplotlib.pyplot as plt
 import networkx as nx
+import scipy.sparse as sp
 from dgl.dataloading import DataLoader, MultiLayerFullNeighborSampler, MultiLayerNeighborSampler
 from utils.preprocess_DBLP import DBLP4057Dataset, DBLPFourAreaDataset
 from utils.preprocess_ACM import ACMDataset
@@ -115,6 +116,7 @@ def node_importance(graph):
 
 
 def train(args):
+    torch.cuda.set_per_process_memory_fraction(1.0, device=f"cuda:{args.devices}")  # limit memory usage
     start_t = time.time()
     # torch.cuda.set_device()
     device_0 = torch.device(f"cuda:{args.devices}" if torch.cuda.is_available() else "cpu")
@@ -123,14 +125,12 @@ def train(args):
     print("Preprocessing Time taken:", time.time() - start_t, "seconds")
     start_t = time.time()
     relations = data.relations
-
     # node_imp = node_importance(data[0])
     # exit()
 
     graph = data[0].to(device_0)
     all_types = list(data._ntypes.values())
     target_type = data.predict_ntype
-    target_type_labels = graph.nodes[target_type].data["label"]
 
     if args.mp2vec_feat:
         ## add metapath2vec feature
@@ -167,9 +167,11 @@ def train(args):
     else:
         masked_graph["total"] = graph.nodes[target_type].data["total"]
     # print(features)
-    # sampler = MultiLayerFullNeighborSampler(2)
-    sample_nei = [3, 5, 7, 11, 13]
-    sampler = MultiLayerNeighborSampler(sample_nei[:3])
+    if args.nei_sample == "full":
+        sampler = MultiLayerFullNeighborSampler(args.num_layer + 1)
+    else:
+        nei_sample = [int(nei) for nei in args.nei_sample.split(",")]
+        sampler = MultiLayerNeighborSampler(nei_sample)
     dataloader = DataLoader(
         graph,
         train_nids,
@@ -215,21 +217,26 @@ def train(args):
     total_loss = []
     log_times = datetime.now().strftime("[%Y-%m-%d_%H:%M:%S]")
     file_name = name_file(args, "log", log_times)
+
+    best_model_dict = None
+    best_epoches = 0
+    min_loss = 1e8
+    wait_count = 0
+    # print(f"Model Allocated Memory: {torch.cuda.memory_allocated() / (1024**2):.2f} MB")
     with open(file_name, "a") as log_file:
         log_file.write(f"{str(args)}\n")
-
     for epoch in tqdm(range(args.epoches), total=args.epoches, desc=colorize("Epoch Training", "blue")):
         model.train()
         train_loss = 0.0
+        optimizer.zero_grad()
         for i, mini_batch in enumerate(dataloader):
-            model.train()
-            optimizer.zero_grad()
+
             src_nodes, dst_nodes, subgs = mini_batch
+
             # print("----------------------------------")
             # for rels_tuple in relations:
             #     print(f"{rels_tuple}: {subgs[1].num_edges(rels_tuple)}")
             # print("----------------------------------")
-
             feat_loss, adj_loss = model(subgs, relations, epoch)
             # weight = torch.softmax(raw_weights, dim=0)
             # edge_weight, feat_weight = weight[0], weight[1]
@@ -239,13 +246,20 @@ def train(args):
             train_loss += loss.item()
 
             loss.backward()
-            optimizer.step()
-            scheduler.step()
+
             # print(f"Batch {i} Loss: {loss.item()}")
+            # print(f"Batch {i} Allocated Memory: {torch.cuda.memory_allocated() / (1024**2):.2f} MB")
             # break
+        optimizer.step()
+        scheduler.step()
         avg_train_loss = train_loss / len(dataloader)
         print(f"Epoch:{epoch+1}/{args.epoches} Training Loss:{(avg_train_loss)} Learning_rate={scheduler.get_last_lr()}")
         total_loss.append(avg_train_loss)
+        if avg_train_loss < min_loss:
+            min_loss = avg_train_loss
+            best_model_dict = model.state_dict()
+            best_epoches = epoch + 1
+            torch.save(model.state_dict(), f"best_{args.dataset}.pth")
         ## Evaluate Embedding Performance
         if epoch > 0 and ((epoch + 1) % args.eva_interval) == 0:
             model.eval()
@@ -253,22 +267,17 @@ def train(args):
             # if True:
             file_name = name_file(args, "log", log_times)
             with open(file_name, "a") as log_file:
-
                 log_file.write(f"Epoches:{epoch}-----------------------------------\n")
                 log_file.write(f"Loss:{avg_train_loss}\n")
-                features = {t: graph.nodes[t].data["feat"].to(device_0) for t in all_types if "feat" in graph.nodes[t].data}
                 # enc_feat = features[target_type]
-                enc_feat, att_mp = model.encoder(
-                    [graph],
-                    1,
+                enc_feat, att_mp = model.encode_embedding(
+                    graph,
                     relations,
                     target_type,
-                    features[target_type],
-                    [features],
+                    features,
                     "evaluation",
                 )
-                features = {t: graph.nodes[t].data["feat"].cpu() for t in all_types if "feat" in graph.nodes[t].data}
-                enc_feat = enc_feat.detach()
+                target_type_labels = graph.nodes[target_type].data["label"]
                 if args.task == "classification":
                     if data.has_label_ratio:
                         for ratio in data.label_ratio:
@@ -307,11 +316,13 @@ def train(args):
 
                         if not performance:
                             performance = {"Acc": [], "Micro-F1": [], "Macro-F1": []}
-                        # performance["Acc"].append(mean["auc_roc"])
+                        performance["Acc"].append(mean["auc_roc"])
                         performance["Micro-F1"].append(mean["micro_f1"])
                         performance["Macro-F1"].append(mean["macro_f1"])
                         log_file.write(
-                            "\t Micro-F1:[{:.4f}, {:.4f}] Macro-F1:[{:.4f}, {:.4f}]  \n".format(
+                            "\t ACC:[{:4f},{:4f}] Micro-F1:[{:.4f}, {:.4f}] Macro-F1:[{:.4f}, {:.4f}]  \n".format(
+                                mean["auc_roc"],
+                                std["auc_roc"],
                                 mean["micro_f1"],
                                 std["micro_f1"],
                                 mean["macro_f1"],
@@ -330,6 +341,11 @@ def train(args):
                         # )
                 elif args.task == "clustering":
                     nmi_list, ari_list = [], []
+
+                    if not data.has_label_ratio:
+                        labeled_indices = torch.where(masked_graph["total"] > 0)[0]
+                        enc_feat = enc_feat[labeled_indices]
+                        target_type_labels = target_type_labels[labeled_indices].squeeze()
 
                     for kmeans_random_state in range(10):
                         nmi, ari = node_clustering_evaluate(enc_feat, target_type_labels, num_classes, kmeans_random_state)
@@ -389,7 +405,7 @@ if __name__ == "__main__":
     parser.add_argument("--num_hidden", type=int, default=256, help="number of hidden units")
     parser.add_argument("--lr", type=float, default=0.001, help="learning rate")
     parser.add_argument("--mask_rate", type=float, default=0.4, help="mask rate")
-    parser.add_argument("--dynamic_mask_rate", type=str, default="0.3,0.002,0.9", help="dynamic mask rate")
+    parser.add_argument("--dynamic_mask_rate", type=str, default="0.4,0.003,0.8", help="dynamic mask rate")
     parser.add_argument("--dropout", type=float, default=0.4, help="dropout probability")
     parser.add_argument("--encoder", type=str, default="HAN", help="heterogeneous encoder")
     parser.add_argument("--decoder", type=str, default="HAN", help="Heterogeneous decoder")
@@ -407,6 +423,7 @@ if __name__ == "__main__":
     parser.add_argument("--reverse_edge", default=True, help="add reverse edge or not")
     parser.add_argument("--mp2vec_feat", default=True, help="add reverse edge or not")
     parser.add_argument("--task", default="classification", help="downstream task")
+    parser.add_argument("--nei_sample", type=str, default="full", help="multilayer neighbor sample")
     known_args, unknow_args = parser.parse_known_args()
 
     cmd_args = [arg.lstrip("-") for arg in sys.argv[1:] if arg.startswith("--")]

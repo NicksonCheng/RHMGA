@@ -13,6 +13,7 @@ import dgl
 import copy
 import math
 
+
 class MultiLayerPerception(nn.Module):
     def __init__(self, input_dim, output_dim):
         super(MultiLayerPerception, self).__init__()
@@ -29,17 +30,17 @@ class MultiLayerPerception(nn.Module):
 
 
 def module_selection(
-    relations,
-    in_dim,
-    hidden_dim,
-    out_dim,
-    num_heads,
-    num_out_heads,
-    num_layer,
-    dropout,
-    module_type,
-    weight_T,
-    status,
+    relations: list,
+    in_dim: int,
+    hidden_dim: int,
+    out_dim: int | dict,
+    num_heads: int,
+    num_out_heads: int,
+    num_layer: int,
+    dropout: float,
+    module_type: str,
+    weight_T: nn.ModuleDict,
+    status: str,
 ):
     if module_type == "HAN":
         return HAN(
@@ -66,9 +67,13 @@ def module_selection(
     elif module_type == "HGraphSAGE":
         return HGraphSAGE(
             relations=relations,
+            in_dim=in_dim,
             hidden_dim=hidden_dim,
-            ntype_out_dim=out_dim,
+            out_dim=out_dim,
             num_layer=num_layer,
+            num_heads=num_heads,
+            num_out_heads=num_out_heads,
+            dropout=dropout,
             weight_T=weight_T,
             status=status,
         )
@@ -83,8 +88,8 @@ class HGARME(nn.Module):
         self.ntype_in_dim = ntype_in_dim
         self.target_type = target_type
         self.all_types = all_types
-        self.mask_rate = args.mask_rate
-        #self.mask_rate = args.dynamic_mask_rate
+        # self.mask_rate = args.mask_rate
+        self.mask_rate = args.dynamic_mask_rate
         self.hidden_dim = args.num_hidden
         self.num_layer = args.num_layer
         self.num_heads = args.num_heads
@@ -98,14 +103,14 @@ class HGARME(nn.Module):
         self.all_feat_recons = args.all_feat_recons
         self.all_edge_recons = args.all_edge_recons
         # encoder/decoder hidden dimension
-        if self.encoder_type == "HAN":
+        if self.encoder_type == "HGraphSAGE":
             self.enc_dim = self.hidden_dim // self.num_heads
         else:
             self.enc_dim = self.hidden_dim
         self.enc_heads = self.num_heads
 
         self.dec_in_dim = self.hidden_dim  # enc_dim * enc_heads
-        if self.decoder_type == "HAN":
+        if self.decoder_type == "HGraphSAGE":
             self.dec_hidden_dim = self.hidden_dim // self.num_heads
         else:
             self.dec_hidden_dim = self.hidden_dim
@@ -114,22 +119,9 @@ class HGARME(nn.Module):
         ## project all type of node into same dimension
         self.weight_T = nn.ModuleDict({t: nn.Linear(self.ntype_in_dim[t], self.hidden_dim) for t in self.all_types})
         self.ntype_enc_mask_token = {t: nn.Parameter(torch.zeros(1, self.ntype_in_dim[t])) for t in self.all_types}
-        self.edge_recons_encoder = module_selection(
-            relations=relations,
-            in_dim=self.target_in_dim,
-            hidden_dim=self.enc_dim,
-            out_dim=self.enc_dim,
-            num_heads=self.enc_heads,
-            num_out_heads=self.enc_heads,
-            num_layer=self.num_layer,
-            dropout=self.dropout,
-            module_type=self.encoder_type,
-            weight_T=self.weight_T,
-            status="encoder",
-        )
         self.encoder = module_selection(
             relations=relations,
-            in_dim=self.target_in_dim,
+            in_dim=self.hidden_dim,
             hidden_dim=self.enc_dim,
             out_dim=self.enc_dim,
             num_heads=self.enc_heads,
@@ -142,18 +134,23 @@ class HGARME(nn.Module):
         )
         # linear transformation from encoder to decoder
         self.initial_status_dim(relations=relations)
-        self.decoder = module_selection(
-            relations=relations,
-            in_dim=self.dec_in_dim,
-            hidden_dim=self.dec_hidden_dim,
-            out_dim=self.ntype_in_dim,
-            num_heads=self.enc_heads,
-            num_out_heads=self.dec_heads,
-            num_layer=self.num_layer,
-            dropout=self.dropout,
-            module_type=self.decoder_type,
-            weight_T=self.weight_T,
-            status="decoder",
+        self.decoder = nn.ModuleDict(
+            {
+                t: module_selection(
+                    relations=relations,
+                    in_dim=self.dec_in_dim,
+                    hidden_dim=self.dec_hidden_dim,
+                    out_dim=self.ntype_in_dim[t],
+                    num_heads=self.enc_heads,
+                    num_out_heads=self.dec_heads,
+                    num_layer=self.num_layer,
+                    dropout=self.dropout,
+                    module_type=self.decoder_type,
+                    weight_T=self.weight_T,
+                    status="decoder",
+                )
+                for t in self.all_types
+            }
         )
         self.criterion = partial(cosine_similarity, gamma=args.gamma)
 
@@ -213,7 +210,7 @@ class HGARME(nn.Module):
                 raise NotImplementedError
 
     def mask_edge_reconstruction(self, subgs, relations, epoch=None):
-        
+
         ### src node should be encode to reconstruct adjacent matrix, rev relation should do same thing again
         ### we use dst-based graph's dst_node and src-based graph's dst_node to reconstruct adjacent matrix
         ### But if there are connection on same type of node, we just use dst_based_subg to reconstruct adjacent matrix
@@ -229,10 +226,11 @@ class HGARME(nn.Module):
 
         dst_based_embs = {}
         src_based_embs = {}
-       
 
         for use_ntype, use_x in dst_based_x.items():
             src_x = [g.srcdata["feat"] for g in subgs]
+            src_x = [{ntype: self.weight_T[ntype](x) for ntype, x in s_x.items()} for s_x in src_x]
+            use_x = self.weight_T[use_ntype](use_x)
             if not self.all_edge_recons and use_ntype != self.target_type:
                 continue
 
@@ -247,7 +245,9 @@ class HGARME(nn.Module):
             # dst_based_embs[use_ntype] = dst_dec_rep
         for use_ntype, use_x in src_based_x.items():
             src_x = [g.srcdata["feat"] for g in subgs]
-            if not self.all_edge_recons and use_ntype != self.target_type:
+            src_x = [{ntype: self.weight_T[ntype](x) for ntype, x in s_x.items()} for s_x in src_x]
+            use_x = self.weight_T[use_ntype](use_x)
+            if not self.all_edge_recons and use_ntype == self.target_type:
                 continue
 
             src_enc_rep, att_mp = self.encoder(subgs, 2, relations, use_ntype, use_x, src_x, "edge_recons_encoder", curr_mask_rate=curr_mask_rate)
@@ -256,8 +256,47 @@ class HGARME(nn.Module):
 
             src_based_embs[use_ntype] = self.encoder_to_decoder(src_enc_rep)
 
+        ## meta adj recons
+        for ntype, dst_embs in dst_based_embs.items():
+            use_relation = [rel for rel in relations if rel[2] == ntype]
+            meta_origin_adj_tensor = None
+            meta_recons_adj_tensor = None
+            for rel_tuple in use_relation:
+                src_node, rel, dst_node = rel_tuple
+                if src_node not in src_based_embs:
+                    continue
+                origin_adj_matrix = None
+                if src_node == dst_node:
+                    num_src_node = dst_based_subg.num_src_nodes(dst_node)
+                    num_dst_node = dst_based_subg.num_dst_nodes(dst_node)
+                    src, dst = dst_based_subg[rel].edges()
+                    origin_adj_matrix = torch.zeros(num_src_node, num_dst_node, device=src.device)
+                    origin_adj_matrix[src, dst] = 1
+                else:
+                    origin_adj_matrix = dst_based_subg[rel].adj()
+                origin_adj_tensor = origin_adj_matrix.to_dense()
+
+                src_dec_rep = src_based_embs[src_node]
+                dst_dec_rep = dst_based_embs[dst_node]
+                recon_adj_matrix = torch.mm(src_dec_rep, dst_dec_rep.T)
+                if meta_origin_adj_tensor == None:
+                    meta_origin_adj_tensor = origin_adj_tensor
+                    meta_recons_adj_tensor = recon_adj_matrix
+                else:
+                    meta_origin_adj_tensor = torch.cat((meta_origin_adj_tensor, origin_adj_tensor), dim=0)
+                    meta_recons_adj_tensor = torch.cat((meta_recons_adj_tensor, recon_adj_matrix), dim=0)
+
+            meta_adj_recons_loss = self.criterion(meta_origin_adj_tensor, meta_recons_adj_tensor)
+            all_adjmatrix_recons_loss += meta_adj_recons_loss
+        avg_adj_recons_loss = all_adjmatrix_recons_loss / len(dst_based_embs)
+        return avg_adj_recons_loss
+
+        all_adjmatrix_recons_loss = 0.0
+
+        # each relation adj reconstruction
         for rel_tuple in relations:
             src_node, rel, dst_node = rel_tuple
+
             if src_node not in src_based_embs or dst_node not in dst_based_embs:
                 continue
             origin_adj_matrix = None
@@ -278,52 +317,64 @@ class HGARME(nn.Module):
             rel_pair_loss = self.criterion(origin_adj_tensor, recon_adj_matrix)
             all_adjmatrix_recons_loss += rel_pair_loss
             num_loss += 1
-        return all_adjmatrix_recons_loss / num_loss
+        avg_adj_recons_loss = all_adjmatrix_recons_loss / num_loss
+        return avg_adj_recons_loss
 
     def mask_attribute_reconstruction(self, subgs, relations, epoch=None):
 
         all_node_feature_recons_loss = 0.0
         curr_mask_rate = self.get_mask_rate(self.mask_rate, epoch=epoch)
-
         ntype_dst_x = {}
 
         ## if node exist sample zero node, we don't use it(small batch size problem)
         ntype_dst_x = {ntype: feat for ntype, feat in subgs[-1].dstdata["feat"].items() if feat.shape[0] > 0}
+        ##
+
         ## only target node feature reconstruction
-        if not self.all_feat_recons and self.target_type in ntype_dst_x:
+        if not self.all_feat_recons:
+            if self.target_type not in ntype_dst_x:
+                return 0.0
             ntype_dst_x = {self.target_type: ntype_dst_x[self.target_type]}
-        if len(ntype_dst_x) == 0:
-            return 0.0
+        ##
+
         ## mask node feature
         ntype_use_dst_x, (ntypes_mask_nodes, ntypes_keep_nodes) = self.encode_mask_noise(subgs, ntype_dst_x, curr_mask_rate)
+        ##
 
-        # if every node masking we just not mask node instead(small batch size problem)
-        for ntype,feat in ntype_use_dst_x.items():
-            if(feat.shape[0] == 0):
-                ntype_use_dst_x[ntype]=ntype_dst_x[ntype]
+        ## if every node masking we just not mask node instead(small batch size problem)
+        for ntype, feat in ntype_use_dst_x.items():
+            if feat.shape[0] == 0:
+                ntype_use_dst_x[ntype] = ntype_dst_x[ntype]
+        ##
+
         for use_ntype, use_x in ntype_use_dst_x.items():
             src_x = [g.srcdata["feat"] for g in subgs]
-
             mask_nodes = ntypes_mask_nodes[use_ntype]
+            # for i, s_x in enumerate(src_x):
+            #     for ntype, x in s_x.items():
+            #         print(f"layer: {len(src_x)-i} {ntype} {x.shape}")
+            # print("-----------------------------")
 
+            use_x = self.weight_T[use_ntype](use_x)
+            src_x = [{ntype: self.weight_T[ntype](x) for ntype, x in s_x.items()} for s_x in src_x]
             enc_rep, att_mp = self.encoder(subgs, 1, relations, use_ntype, use_x, src_x, "encoder")
 
-            hidden_rep = self.encoder_to_decoder(enc_rep)
             # remask
+            hidden_rep = self.encoder_to_decoder(enc_rep)
             hidden_rep[mask_nodes] = 0.0
 
             if self.decoder_type == "HGraphSAGE":
-                dec_rep, att_mp = self.decoder(subgs, 1, relations, use_ntype, hidden_rep, src_x, "decoder")
+                dec_rep, att_mp = self.decoder[use_ntype](subgs, 1, relations, use_ntype, hidden_rep, src_x, "decoder")
             elif self.decoder_type == "MLP":
                 dec_rep = self.decoder(hidden_rep)
             ## calculate all type nodes feature reconstruction
-            if(mask_nodes.shape[0]==0):
+            if mask_nodes.shape[0] == 0:
                 ntype_loss = self.criterion(ntype_dst_x[use_ntype], dec_rep)
-            else:    
+            else:
                 ntype_loss = self.criterion(ntype_dst_x[use_ntype][mask_nodes], dec_rep[mask_nodes])
 
-            if(math.isnan(ntype_loss)):
-                num_nodes=ntype_dst_x[use_ntype].shape[0]
+            if math.isnan(ntype_loss):
+                num_nodes = ntype_dst_x[use_ntype].shape[0]
                 num_mask_nodes = int(curr_mask_rate * num_nodes)
                 print(num_nodes)
                 print(curr_mask_rate)
@@ -332,7 +383,22 @@ class HGARME(nn.Module):
                 print(dec_rep[mask_nodes])
             all_node_feature_recons_loss += ntype_loss
 
-        return all_node_feature_recons_loss / len(ntype_use_dst_x)
+        avg_feat_recons_loss = all_node_feature_recons_loss / len(ntype_use_dst_x)
+        return avg_feat_recons_loss
+
+    def encode_embedding(self, graph, relations, target_type, features, status):
+
+        features = {ntype: self.weight_T[ntype](feats) for ntype, feats in features.items()}
+        enc_feat, att_mp = self.encoder(
+            subgs=[graph],
+            start_layer=1,
+            relations=relations,
+            dst_ntype=target_type,
+            dst_feat=features[target_type],
+            subgs_src_ntype_feats=[features],
+            status=status,
+        )
+        return enc_feat.detach(), att_mp
 
     def encode_mask_noise(self, graph, ntype_x, mask_rate):
         ntypes_mask_x = {}

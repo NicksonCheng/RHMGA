@@ -124,7 +124,7 @@ def node_classification_evaluate(device, enc_feat, args, num_classes, labels, ma
     micro_f1s = []
     macro_f1s = []
     auc_score_list = []
-    for _ in tqdm(range(50), position=0, desc=colorize("Evaluating", "green")):
+    for _ in tqdm(range(10), position=0, desc=colorize("Evaluating", "green")):
 
         classifier = MLP(num_dim=enc_feat.shape[-1], num_classes=num_classes).to(device)
         # classifier = LogReg(ft_in=args.num_hidden, nb_classes=num_classes).to(device)
@@ -211,35 +211,50 @@ def node_classification_evaluate(device, enc_feat, args, num_classes, labels, ma
 
 
 def LGS_node_classification_evaluate(device, enc_feat, args, num_classes, labels, masked_graph, multilabel):
-
+    n_split = 10
     labeled_indices = torch.where(masked_graph["total"] > 0)[0]  ## because the mask is a tensor, so we need to use torch.where to get the indices
     ## node all nodes has labels
     labels_dict = labels[labeled_indices].squeeze().detach().cpu()
     enc_feat_dict = enc_feat[labeled_indices].detach().cpu()
 
     seed = np.random.seed(1)
-    skf = StratifiedKFold(n_splits=10, shuffle=True, random_state=seed)
-    accs = []
+    skf = StratifiedKFold(n_splits=n_split, shuffle=True, random_state=seed)
+    auc_roc_list = []
     micro_f1s = []
     macro_f1s = []
     auc_roc_list = []
+    ## baseline model's evaluation
+    for train_index, test_index in tqdm(skf.split(enc_feat_dict, labels_dict), total=n_split):
+        clf = LinearSVC(random_state=seed, max_iter=3000, dual="auto")
+        clf.fit(enc_feat_dict[train_index], labels_dict[train_index])
+        pred = clf.predict(enc_feat_dict[test_index])
 
-    # for train_index, test_index in skf.split(enc_feat_dict, labels_dict):
-    #     clf = LinearSVC(random_state=seed, max_iter=3000, dual="auto")
-    #     clf.fit(enc_feat_dict[train_index], labels_dict[train_index])
-    #     pred = clf.predict(enc_feat_dict[test_index])
+        pred_score = clf.decision_function(enc_feat_dict[test_index])
+        softmax_score = torch.softmax(torch.from_numpy(pred_score), dim=1).numpy()
+        macro_f1s.append(f1_score(labels_dict[test_index], pred, average="macro"))
+        micro_f1s.append(f1_score(labels_dict[test_index], pred, average="micro"))
 
-    #     macro_f1s.append(f1_score(labels_dict[test_index], pred, average="macro"))
-    #     micro_f1s.append(f1_score(labels_dict[test_index], pred, average="micro"))
-    # mean = {
-    #     "micro_f1": np.mean(micro_f1s),
-    #     "macro_f1": np.mean(macro_f1s),
-    # }
-    # std = {
-    #     "micro_f1": np.std(micro_f1s),
-    #     "macro_f1": np.std(macro_f1s),
-    # }
-    # return mean, std
+        auc_roc_list.append(
+            roc_auc_score(
+                y_true=labels_dict[test_index],
+                y_score=softmax_score,
+                multi_class="ovr",
+                average=None if multilabel else "macro",
+            )
+        )
+    mean = {
+        "auc_roc": np.mean(auc_roc_list),
+        "micro_f1": np.mean(micro_f1s),
+        "macro_f1": np.mean(macro_f1s),
+    }
+    std = {
+        "auc_roc": np.std(auc_roc_list),
+        "micro_f1": np.std(micro_f1s),
+        "macro_f1": np.std(macro_f1s),
+    }
+    return mean, std
+
+    ## my own evaluation
     tqdm_bar = tqdm(total=skf.get_n_splits(enc_feat_dict, labels_dict), position=0, desc=colorize("Evaluating", "green"))
     for i, (train_index, test_index) in enumerate(skf.split(enc_feat_dict, labels_dict)):
         classifier = MLP(num_dim=enc_feat.shape[-1], num_classes=num_classes).to(device)
