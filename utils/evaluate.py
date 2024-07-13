@@ -13,6 +13,7 @@ from utils.utils import colorize
 from torch.optim import SparseAdam
 from torch.utils.data import DataLoader
 from sklearn.svm import LinearSVC
+from collections import Counter
 
 
 class LogReg(nn.Module):
@@ -38,13 +39,14 @@ class LogReg(nn.Module):
 
 
 class MLP(nn.Module):
-    def __init__(self, num_dim, num_classes):
+    def __init__(self, num_dim, num_classes, dropout=0.5):
         super(MLP, self).__init__()
         self.hidden = num_dim * 2
         self.fc1 = nn.Linear(num_dim, self.hidden)
         self.relu = nn.ReLU()
         self.sigmoid = nn.Sigmoid()
         self.fc2 = nn.Linear(self.hidden, num_classes)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, multilabel, x):
         x = self.relu(self.fc1(x))
@@ -73,7 +75,7 @@ def score(logits, labels, multilabel):
     )
 
 
-def metapath2vec_train(args, graph, target_type, model, epoch, device):
+def metapath2vec_train(graph, target_type, model, epoch, device):
     for e in tqdm(range(epoch), desc="Metapath2vec Training"):
         # Use the source node type of etype 'uc'
         dataloader = DataLoader(torch.arange(graph.num_nodes(target_type)), batch_size=128, shuffle=True, collate_fn=model.sample)
@@ -211,6 +213,7 @@ def node_classification_evaluate(device, enc_feat, args, num_classes, labels, ma
 
 
 def LGS_node_classification_evaluate(device, enc_feat, args, num_classes, labels, masked_graph, multilabel):
+
     n_split = 10
     labeled_indices = torch.where(masked_graph["total"] > 0)[0]  ## because the mask is a tensor, so we need to use torch.where to get the indices
     ## node all nodes has labels
@@ -219,18 +222,25 @@ def LGS_node_classification_evaluate(device, enc_feat, args, num_classes, labels
 
     seed = np.random.seed(1)
     skf = StratifiedKFold(n_splits=n_split, shuffle=True, random_state=seed)
-    auc_roc_list = []
+    accs = []
     micro_f1s = []
     macro_f1s = []
-    auc_roc_list = []
-    ## baseline model's evaluation
+    auc_roc_list = []  ## baseline model's evaluation
+    print(torch.bincount(labels_dict))
     for train_index, test_index in tqdm(skf.split(enc_feat_dict, labels_dict), total=n_split):
+        # print(Counter(labels_dict[train_index].tolist()))
+        # print("----------------")
+        # print(Counter(labels_dict[test_index].tolist()))
+        # exit()
         clf = LinearSVC(random_state=seed, max_iter=3000, dual="auto")
         clf.fit(enc_feat_dict[train_index], labels_dict[train_index])
         pred = clf.predict(enc_feat_dict[test_index])
-
+        print(pred)
+        print(labels_dict[test_index])
+        acc = torch.eq(torch.tensor(pred), labels_dict[test_index]).sum().item() / len(pred)
         pred_score = clf.decision_function(enc_feat_dict[test_index])
         softmax_score = torch.softmax(torch.from_numpy(pred_score), dim=1).numpy()
+
         macro_f1s.append(f1_score(labels_dict[test_index], pred, average="macro"))
         micro_f1s.append(f1_score(labels_dict[test_index], pred, average="micro"))
 
@@ -242,6 +252,7 @@ def LGS_node_classification_evaluate(device, enc_feat, args, num_classes, labels
                 average=None if multilabel else "macro",
             )
         )
+        print(f"Acc:{acc} Macro:{macro_f1s[-1]}, Micro:{micro_f1s[-1]} AUC_ROC:{auc_roc_list[-1]}")
     mean = {
         "auc_roc": np.mean(auc_roc_list),
         "micro_f1": np.mean(micro_f1s),

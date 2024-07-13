@@ -2,18 +2,31 @@ import os
 import dgl
 import torch
 import pandas as pd
+import numpy as np
 from dgl.data import DGLDataset
 from torch_geometric.data import HeteroData
 from tqdm import tqdm
 from dgl.data.utils import save_graphs, load_graphs, generate_mask_tensor, idx2mask
 from collections import Counter
 from sklearn.model_selection import train_test_split
+from dgl.nn.pytorch import MetaPath2Vec
+from utils.evaluate import metapath2vec_train
 
 
 class FreebaseDataset(DGLDataset):
-    def __init__(self, reverse_edge=True, url=None, raw_dir=None, save_dir=None, force_reload=False, verbose=False):
+    def __init__(
+        self,
+        reverse_edge: str = True,
+        use_feat: str = "meta2vec",
+        device: int = 0,
+        url=None,
+        raw_dir=None,
+        save_dir=None,
+        force_reload=False,
+        verbose=False,
+    ):
         self.reverse_edge = reverse_edge
-
+        self.device = torch.device(f"cuda:{device}" if torch.cuda.is_available() else "cpu")
         self.graph = HeteroData()
         self._ntypes = {"B": "Book", "F": "Film", "M": "Music", "S": "Sports", "P": "People", "L": "Location", "O": "Organization", "BU": "Business"}
         self._relations = [
@@ -54,10 +67,12 @@ class FreebaseDataset(DGLDataset):
             ("Business", "Business-Location", "Location"),
             ("Business", "Business-Business", "Business"),
         ]
+
         curr_dir = os.path.dirname(__file__)
         parent_dir = os.path.dirname(curr_dir)
         self.data_path = os.path.join(parent_dir, "data/CKD_data/Freebase")
         self.g_file = "Freebase_dgl_graph.bin"
+        self.create_metapaths()
         if self.reverse_edge:
             self.g_file = "Freebase_dgl_graph(reverse).bin"
             self.add_reverse_relation()
@@ -77,6 +92,14 @@ class FreebaseDataset(DGLDataset):
             rev_rel = (dst, f"{dst}-{src}", src)
             if rev_rel not in self._relations:
                 self._relations.append(rev_rel)
+
+    def create_metapaths(self):
+        self._metapaths = {ntype: [] for ntype in self._ntypes.values()}
+        for rel_tuples in self._relations:
+            u, rel, v = rel_tuples
+            self._metapaths[u].append(rel)
+            if u != v:
+                self._metapaths[u].append(f"{v}-{u}")
 
     def download(self):
         pass
@@ -106,10 +129,9 @@ class FreebaseDataset(DGLDataset):
         nodes = nodes_file["node_id"].tolist()
         nodes_type = nodes_file["node_type"].tolist()
         nodes_attributes = nodes_file["node_attributes"].tolist()
-
         ## mapping each node id(specific type) into new id by dictionary
         node_dict = {ntype: {"id": [], "feat": []} for ntype in self._ntypes.values()}
-        for n, t, attr in zip(nodes, nodes_type, nodes_attributes):
+        for i, (n, t, attr) in enumerate(zip(nodes, nodes_type, nodes_attributes)):
 
             ntype = list(self._ntypes.values())[t]
 
@@ -117,8 +139,8 @@ class FreebaseDataset(DGLDataset):
             feat = attr.split(",")
             feat = [float(f) for f in feat]
             node_dict[ntype]["feat"].append(feat)
-        for ntype in node_dict.keys():
-            node_dict[ntype]["feat"] = torch.tensor(node_dict[ntype]["feat"])
+        # for ntype in node_dict.keys():
+        #     node_dict[ntype]["feat"] = torch.tensor(node_dict[ntype]["feat"])
         ## sort node id and feature by node id
         # for ntype in self._ntypes.values():
         #     combined_list = zip(node_dict[ntype]["id"], node_dict[ntype]["feat"])
@@ -129,8 +151,10 @@ class FreebaseDataset(DGLDataset):
 
         #     node_dict[ntype]["id"] = sort_id
         #     node_dict[ntype]["feat"] = torch.tensor(sort_feat)
+        np.save(os.path.join(self.data_path, "target_node_dict.npy"), np.array(node_dict[self.predict_ntype]["id"]))
         self.graph = dgl.heterograph(self._read_edges(node_dict))
-        self._read_feats_labels(node_dict)
+        self._read_feats()
+        self._read_labels(node_dict)
 
     def _read_edges(self, node_dict):
         edges = {}
@@ -165,7 +189,20 @@ class FreebaseDataset(DGLDataset):
 
         return edges
 
-    def _read_feats_labels(self, node_dict):
+    def _read_feats(self):
+        for ntype, metapath in self.metapaths.items():
+            wd_size = len(metapath) + 1
+            metapath_model = MetaPath2Vec(self.graph, metapath, wd_size, 512, 3, True)
+            metapath2vec_train(self.graph, ntype, metapath_model, 50, self.device)
+
+            user_nids = torch.LongTensor(metapath_model.local_to_global_nid[ntype]).to(self.device)
+            mp2vec_emb = metapath_model.node_embed(user_nids).detach().cpu()
+            self.graph.nodes[ntype].data["feat"] = mp2vec_emb
+            del metapath_model
+            torch.cuda.empty_cache()
+
+    def _read_labels(self, node_dict):
+
         split_ratio = {"train": 0.8, "val": 0.1, "test": 0.1}
         label_train_file = pd.read_csv(
             os.path.join(self.data_path, "label.dat"),
@@ -179,8 +216,8 @@ class FreebaseDataset(DGLDataset):
         )
         label_file = pd.concat([label_train_file, label_test_file], ignore_index=True)
         ## assign node feature
-        for ntype in self._ntypes.values():
-            self.graph.nodes[ntype].data["feat"] = node_dict[ntype]["feat"]
+        # for ntype in self._ntypes.values():
+        #     self.graph.nodes[ntype].data["feat"] = node_dict[ntype]["feat"]
 
         ## assign pred node label in graph
         pred_num_nodes = self.graph.num_nodes(self.predict_ntype)
@@ -194,9 +231,10 @@ class FreebaseDataset(DGLDataset):
             self.graph.nodes[self.predict_ntype].data["label"][mapped_node_id] = torch.tensor([node_label])
             label_nodes_indices.append(mapped_node_id)
         self._num_classes = self.graph.nodes[self.predict_ntype].data["label"].max().item() + 1
-        print(self.graph.nodes[self.predict_ntype].data["label"])
-        print(torch.bincount(self.graph.nodes[self.predict_ntype].data["label"]))
-        exit()
+
+        label_nodes_indices = np.array(label_nodes_indices)
+        mask = generate_mask_tensor(idx2mask(label_nodes_indices, pred_num_nodes))
+        self.graph.nodes[self.predict_ntype].data["total"] = torch.tensor(mask)
         ## split label node into train valid test
 
         ## self-define split ratio
@@ -209,17 +247,17 @@ class FreebaseDataset(DGLDataset):
         # }
 
         ## sklearn split data
-        train_indices, test_indices = train_test_split(label_nodes_indices, test_size=split_ratio["test"], random_state=42)
-        train_indices, val_indices = train_test_split(train_indices, test_size=split_ratio["val"], random_state=42)
-        print(len(train_indices), len(val_indices), len(test_indices))
-        eva_indices = {
-            "train": train_indices,
-            "val": val_indices,
-            "test": test_indices,
-        }
-        for name, indices in eva_indices.items():
-            mask = generate_mask_tensor(idx2mask(indices, pred_num_nodes))
-            self.graph.nodes[self.predict_ntype].data[name] = mask
+        # train_indices, test_indices = train_test_split(label_nodes_indices, test_size=split_ratio["test"], random_state=42)
+        # train_indices, val_indices = train_test_split(train_indices, test_size=split_ratio["val"], random_state=42)
+        # print(len(train_indices), len(val_indices), len(test_indices))
+        # eva_indices = {
+        #     "train": train_indices,
+        #     "val": val_indices,
+        #     "test": test_indices,
+        # }
+        # for name, indices in eva_indices.items():
+        #     mask = generate_mask_tensor(idx2mask(indices, pred_num_nodes))
+        #     self.graph.nodes[self.predict_ntype].data[name] = mask
 
     def has_cache(self):
         # return False
@@ -238,6 +276,10 @@ class FreebaseDataset(DGLDataset):
     @property
     def relations(self):
         return self._relations
+
+    @property
+    def metapaths(self):
+        return self._metapaths
 
     @property
     def predict_ntype(self):

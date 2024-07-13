@@ -138,14 +138,17 @@ class Schema_Relation_Network(nn.Module):
             # z_r[rel] = self.gats[rel](rel_graph, neighbors_feat[src_ntype], dst_feat)
 
             z_r[rel] = self.gats[rel](rel_graph, (src_feat[src_ntype], dst_feat)).flatten(1)
-            # print(z_r[rel].shape)
 
         ## semantic aggregation with all relation-based embedding
         ## prevent only one dst node or only one relation
-        z_r = torch.stack(list(z_r.values()), dim=1)
-        z, att_mp = self.semantic_attention(z_r)
-
-        return z, att_mp
+        try:
+            z_r = torch.stack(list(z_r.values()), dim=1)
+            z, att_mp = self.semantic_attention(z_r)
+            return z, att_mp
+        except RuntimeError as e:
+            print(e)
+            for rel, zz in z_r.items():
+                print(rel, zz.shape)
 
 
 class HGraphSAGE(nn.Module):
@@ -154,7 +157,7 @@ class HGraphSAGE(nn.Module):
         relations: list,
         in_dim: int,
         hidden_dim: int,
-        out_dim: int | dict,
+        ntype_out_dim: int | dict,
         num_layer: int,
         num_heads: int,
         num_out_heads: int,
@@ -165,16 +168,16 @@ class HGraphSAGE(nn.Module):
         super(HGraphSAGE, self).__init__()
         self.in_dim = in_dim
         self.hidden_dim = hidden_dim
-        self.out_dim = out_dim
+        self.ntype_out_dim = ntype_out_dim
         self.num_layer = num_layer
         self.weight_T = weight_T
         self.layers = nn.ModuleList()
 
         ## because this is HGraphSAGE, the head,dimension problem should be reverse compared to tradictional multilayer GAT
         if num_layer == 1:
-            self.layers.append(Schema_Relation_Network(relations, self.in_dim, self.out_dim, weight_T, num_out_heads, status))
+            self.layers.append(Schema_Relation_Network(relations, self.in_dim, self.hidden_dim, weight_T, num_out_heads, status))
         else:
-            self.layers.append(Schema_Relation_Network(relations, self.hidden_dim * num_heads, self.out_dim, weight_T, num_out_heads, status))
+            self.layers.append(Schema_Relation_Network(relations, self.hidden_dim * num_heads, self.hidden_dim, weight_T, num_out_heads, status))
             for i in range(1, num_layer - 1):
                 self.layers.append(Schema_Relation_Network(relations, self.hidden_dim * num_heads, self.hidden_dim, weight_T, num_heads, status))
             self.layers.append(Schema_Relation_Network(relations, self.in_dim, self.hidden_dim, weight_T, num_heads, status))
@@ -183,6 +186,10 @@ class HGraphSAGE(nn.Module):
         if status == "encoder":
             extra_in_dim = self.in_dim if num_layer == 1 else self.hidden_dim * num_heads
             self.layers.append(Schema_Relation_Network(relations, extra_in_dim, self.hidden_dim, weight_T, num_heads, status))
+
+        ## out_dim has different type of nodes
+        if status == "decoder":
+            self.ntypes_decoder_trans = nn.ModuleDict({ntype: nn.Linear(hidden_dim, out_dim) for ntype, out_dim in self.ntype_out_dim.items()})
 
     ## filter non_zero in_degree dst node
     def mask_edges_func(self, rels_subg: DGLBlock, mask_rate: float = 0.3):
@@ -205,21 +212,19 @@ class HGraphSAGE(nn.Module):
         keep_edges = permutation[num_mask_edges:]
 
         # remove_indices = target_edges_indices[mask_edges]
-
         rels_subg.remove_edges(mask_edges)
-
         return rels_subg
 
     def seperate_relation_graph(
         self, subg: DGLBlock, relations: list, dst_ntype: str, src_ntype_feats: torch.Tensor, masked: bool, mask_rate: float = 0.3
     ):
+
         rels_subgraphs = {}
         use_src_ntype_feats = {}
         for rels_tuple in relations:
             src, rel, dst = rels_tuple
             if dst_ntype == dst and subg.num_edges(rels_tuple) > 0:
                 ## sepearate relation graph
-
                 rels_subg = subg[rels_tuple]
                 use_src_ntype_feats[src] = src_ntype_feats[src]
                 if masked:
@@ -269,6 +274,9 @@ class HGraphSAGE(nn.Module):
             next_subg_src_feats = subgs_src_ntype_feats[-next_layer]
             next_subg_dst_feats = subgs_src_ntype_feats[-curr_layer]
             for ntype, feat in next_subg_dst_feats.items():
+                ## small batch size problem
+                if feat.shape[0] == 0:
+                    continue
                 next_rels_subgraphs, use_src_ntype_feats = self.seperate_relation_graph(
                     next_subg, relations, ntype, next_subg_src_feats, False, curr_mask_rate
                 )
@@ -322,4 +330,6 @@ class HGraphSAGE(nn.Module):
 
         ###
         z, att_mp = self.neighbor_sampling(subgs, start_layer, relations, dst_ntype, dst_feat, subgs_src_ntype_feats, status, curr_mask_rate)
+        if status == "decoder":
+            z = self.ntypes_decoder_trans[dst_ntype](z)
         return z, att_mp

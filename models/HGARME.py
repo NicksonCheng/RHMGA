@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from models.HAN import HAN
 from models.SRN import Schema_Relation_Network
 from models.HGraphSAGE import HGraphSAGE
@@ -15,17 +16,21 @@ import math
 
 
 class MultiLayerPerception(nn.Module):
-    def __init__(self, input_dim, output_dim):
+    def __init__(self, input_dim, output_dim, dropout=0.5):
         super(MultiLayerPerception, self).__init__()
-        self.hidden = input_dim * 2
+        self.hidden = input_dim // 2
         self.fc1 = nn.Linear(input_dim, self.hidden)
         self.relu = nn.ReLU()
         self.fc2 = nn.Linear(self.hidden, output_dim)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
         x = self.fc1(x)
+        x = self.dropout(x)
         x = self.relu(x)
         x = self.fc2(x)
+        x = self.dropout(x)
+        x = self.relu(x)
         return x
 
 
@@ -69,7 +74,7 @@ def module_selection(
             relations=relations,
             in_dim=in_dim,
             hidden_dim=hidden_dim,
-            out_dim=out_dim,
+            ntype_out_dim=out_dim,
             num_layer=num_layer,
             num_heads=num_heads,
             num_out_heads=num_out_heads,
@@ -100,8 +105,10 @@ class HGARME(nn.Module):
         self.gamma = args.gamma
         self.edge_recons = args.edge_recons
         self.feat_recons = args.feat_recons
+        self.degree_recons = args.degree_recons
         self.all_feat_recons = args.all_feat_recons
         self.all_edge_recons = args.all_edge_recons
+        self.all_degree_recons = args.all_degree_recons
         # encoder/decoder hidden dimension
         if self.encoder_type == "HGraphSAGE":
             self.enc_dim = self.hidden_dim // self.num_heads
@@ -134,42 +141,44 @@ class HGARME(nn.Module):
         )
         # linear transformation from encoder to decoder
         self.initial_status_dim(relations=relations)
-        self.decoder = nn.ModuleDict(
-            {
-                t: module_selection(
-                    relations=relations,
-                    in_dim=self.dec_in_dim,
-                    hidden_dim=self.dec_hidden_dim,
-                    out_dim=self.ntype_in_dim[t],
-                    num_heads=self.enc_heads,
-                    num_out_heads=self.dec_heads,
-                    num_layer=self.num_layer,
-                    dropout=self.dropout,
-                    module_type=self.decoder_type,
-                    weight_T=self.weight_T,
-                    status="decoder",
-                )
-                for t in self.all_types
-            }
+        self.decoder = module_selection(
+            relations=relations,
+            in_dim=self.dec_in_dim,
+            hidden_dim=self.dec_hidden_dim,
+            out_dim=self.ntype_in_dim,
+            num_heads=self.enc_heads,
+            num_out_heads=self.dec_heads,
+            num_layer=self.num_layer,
+            dropout=self.dropout,
+            module_type=self.decoder_type,
+            weight_T=self.weight_T,
+            status="decoder",
         )
+        self.degree_decoder = MultiLayerPerception(self.dec_in_dim, len(all_types))
         self.criterion = partial(cosine_similarity, gamma=args.gamma)
+        self.bce_loss = nn.BCELoss()
+        self.sigmoid = nn.Sigmoid()
 
     def initial_status_dim(self, relations):
         self.encoder_to_decoder = nn.Linear(self.dec_in_dim, self.dec_in_dim, bias=False)
         self.edge_recons_encoder_to_decoder = nn.Linear(self.dec_in_dim, self.dec_in_dim, bias=False)
 
-    def forward(self, subgs, relations, epoch=None):
+    def forward(self, subgs, relations, epoch=None, curr_mask_rate=0.3, batch_i=0):
         try:
             node_feature_recons_loss = 0.0
             adjmatrix_recons_loss = 0.0
+            degree_recons_loss = 0.0
+            # curr_mask_rate = self.get_mask_rate(self.mask_rate, epoch=epoch)
             ## Calculate node feature reconstruction loss
             if self.feat_recons:
-                node_feature_recons_loss = self.mask_attribute_reconstruction(subgs, relations, epoch)
+                node_feature_recons_loss = self.mask_attribute_reconstruction(subgs, relations, epoch, curr_mask_rate)
             if self.edge_recons:
-                adjmatrix_recons_loss = self.mask_edge_reconstruction(subgs, relations, epoch)
-
+                adjmatrix_recons_loss = self.mask_edge_reconstruction(subgs, relations, epoch, curr_mask_rate, batch_i)
+            if self.degree_recons:
+                degree_recons_loss = self.mask_edge_degree_reconstruction(subgs, relations, epoch, curr_mask_rate, batch_i)
             ## Calculate adjacent matrix reconstruction loss
-            return node_feature_recons_loss, adjmatrix_recons_loss
+            return node_feature_recons_loss, adjmatrix_recons_loss, degree_recons_loss
+
         except RuntimeError as e:
             # Check if the error message contains CUDA-related information
             if "CUDA" in str(e):
@@ -209,15 +218,49 @@ class HGARME(nn.Module):
             else:
                 raise NotImplementedError
 
-    def mask_edge_reconstruction(self, subgs, relations, epoch=None):
+    def mask_edge_degree_reconstruction(self, subgs, relations, epoch, curr_mask_rate=0.3, batch_i=0):
+        dst_based_subg = subgs[-1]
+        dst_based_x = {ntype: feat for ntype, feat in dst_based_subg.dstdata["feat"].items() if feat.shape[0] > 0}
+        if not self.all_degree_recons:
+            if self.target_type not in dst_based_x:
+                return 0.0
+            dst_based_x = {self.target_type: dst_based_x[self.target_type]}
+        all_degree_recons_loss = 0.0
+        for use_ntype, use_x in dst_based_x.items():
+
+            src_x = [g.srcdata["feat"] for g in subgs]
+            src_x = [{ntype: self.weight_T[ntype](x) for ntype, x in s_x.items()} for s_x in src_x]
+            use_x = self.weight_T[use_ntype](use_x)
+            if not self.all_edge_recons and use_ntype != self.target_type:
+                continue
+
+            dst_enc_rep, att_mp = self.encoder(subgs, 1, relations, use_ntype, use_x, src_x, "edge_recons_encoder", curr_mask_rate=curr_mask_rate)
+            dst_hidden_rep = self.encoder_to_decoder(dst_enc_rep)
+            degree_rep = self.degree_decoder(dst_hidden_rep)
+
+            ntype_nei_degrees = dst_based_subg.dstdata["in_degree"][use_ntype]
+            normalize_ntype_nei_degrees = ntype_nei_degrees
+            if batch_i == 0 and False:
+                torch.set_printoptions(threshold=degree_rep.numel())
+                torch.set_printoptions(threshold=normalize_ntype_nei_degrees.numel())
+                print(degree_rep)
+                print(normalize_ntype_nei_degrees)
+                # exit()
+            # all_degree_recons_loss += self.criterion(normalize_ntype_nei_degrees.float(), degree_rep)
+            try:
+                all_degree_recons_loss += F.mse_loss(normalize_ntype_nei_degrees.float(), degree_rep)
+            except RuntimeError as e:
+                print(e)
+                print("error here")
+        return all_degree_recons_loss
+
+    def mask_edge_reconstruction(self, subgs, relations, epoch=None, curr_mask_rate=0.3, batch_i=0):
 
         ### src node should be encode to reconstruct adjacent matrix, rev relation should do same thing again
         ### we use dst-based graph's dst_node and src-based graph's dst_node to reconstruct adjacent matrix
         ### But if there are connection on same type of node, we just use dst_based_subg to reconstruct adjacent matrix
         all_adjmatrix_recons_loss = 0.0
         num_loss = 0
-        curr_mask_rate = self.get_mask_rate(self.mask_rate, epoch=epoch)
-
         src_based_subg = subgs[-2]
         dst_based_subg = subgs[-1]
 
@@ -236,7 +279,6 @@ class HGARME(nn.Module):
 
             dst_enc_rep, att_mp = self.encoder(subgs, 1, relations, use_ntype, use_x, src_x, "edge_recons_encoder", curr_mask_rate=curr_mask_rate)
             dst_based_embs[use_ntype] = self.encoder_to_decoder(dst_enc_rep)
-
             ## for GNN decoder, but performance is not good
             # src_ntype_rep=[self.edge_recons_encoder_to_decoder[ntype][idx](enc_rep) for idx,enc_rep in enumerate(src_ntype_enc_rep)]
             # dst_based_hidden_rep = self.encoder_to_decoder(dst_enc_rep)
@@ -286,44 +328,51 @@ class HGARME(nn.Module):
                     meta_origin_adj_tensor = torch.cat((meta_origin_adj_tensor, origin_adj_tensor), dim=0)
                     meta_recons_adj_tensor = torch.cat((meta_recons_adj_tensor, recon_adj_matrix), dim=0)
 
+            if batch_i == 0 and False:
+                torch.set_printoptions(threshold=meta_origin_adj_tensor.numel())
+                has_edge_indices = torch.where(meta_origin_adj_tensor == 1)
+                print(meta_origin_adj_tensor[has_edge_indices])
+                print(meta_recons_adj_tensor[has_edge_indices])
+            # meta_adj_recons_loss = self.bce_loss(self.sigmoid(meta_recons_adj_tensor), meta_origin_adj_tensor)
             meta_adj_recons_loss = self.criterion(meta_origin_adj_tensor, meta_recons_adj_tensor)
             all_adjmatrix_recons_loss += meta_adj_recons_loss
         avg_adj_recons_loss = all_adjmatrix_recons_loss / len(dst_based_embs)
+
         return avg_adj_recons_loss
 
-        all_adjmatrix_recons_loss = 0.0
+        # all_adjmatrix_recons_loss = 0.0
 
         # each relation adj reconstruction
-        for rel_tuple in relations:
-            src_node, rel, dst_node = rel_tuple
+        # for rel_tuple in relations:
+        #     src_node, rel, dst_node = rel_tuple
 
-            if src_node not in src_based_embs or dst_node not in dst_based_embs:
-                continue
-            origin_adj_matrix = None
-            if src_node == dst_node:
-                num_src_node = dst_based_subg.num_src_nodes(dst_node)
-                num_dst_node = dst_based_subg.num_dst_nodes(dst_node)
-                src, dst = dst_based_subg[rel].edges()
-                origin_adj_matrix = torch.zeros(num_src_node, num_dst_node, device=src.device)
-                origin_adj_matrix[src, dst] = 1
-            else:
-                origin_adj_matrix = dst_based_subg[rel].adj()
-            origin_adj_tensor = origin_adj_matrix.to_dense()
+        #     if src_node not in src_based_embs or dst_node not in dst_based_embs:
+        #         continue
+        #     origin_adj_matrix = None
+        #     if src_node == dst_node:
+        #         num_src_node = dst_based_subg.num_src_nodes(dst_node)
+        #         num_dst_node = dst_based_subg.num_dst_nodes(dst_node)
+        #         src, dst = dst_based_subg[rel].edges()
+        #         origin_adj_matrix = torch.zeros(num_src_node, num_dst_node, device=src.device)
+        #         origin_adj_matrix[src, dst] = 1
+        #     else:
+        #         origin_adj_matrix = dst_based_subg[rel].adj()
+        #     origin_adj_tensor = origin_adj_matrix.to_dense()
 
-            src_dec_rep = src_based_embs[src_node]
-            dst_dec_rep = dst_based_embs[dst_node]
-            recon_adj_matrix = torch.mm(src_dec_rep, dst_dec_rep.T)
+        #     src_dec_rep = src_based_embs[src_node]
+        #     dst_dec_rep = dst_based_embs[dst_node]
+        #     recon_adj_matrix = torch.mm(src_dec_rep, dst_dec_rep.T)
 
-            rel_pair_loss = self.criterion(origin_adj_tensor, recon_adj_matrix)
-            all_adjmatrix_recons_loss += rel_pair_loss
-            num_loss += 1
-        avg_adj_recons_loss = all_adjmatrix_recons_loss / num_loss
-        return avg_adj_recons_loss
+        #     rel_pair_loss = self.criterion(origin_adj_tensor, recon_adj_matrix)
+        #     #rel_pair_loss=self.bce_loss(self.sigmoid(recon_adj_matrix), origin_adj_tensor)
+        #     all_adjmatrix_recons_loss += rel_pair_loss
+        #     num_loss += 1
+        # avg_adj_recons_loss = all_adjmatrix_recons_loss / num_loss
+        # return avg_adj_recons_loss
 
-    def mask_attribute_reconstruction(self, subgs, relations, epoch=None):
+    def mask_attribute_reconstruction(self, subgs, relations, epoch=None, curr_mask_rate=0.3):
 
         all_node_feature_recons_loss = 0.0
-        curr_mask_rate = self.get_mask_rate(self.mask_rate, epoch=epoch)
         ntype_dst_x = {}
 
         ## if node exist sample zero node, we don't use it(small batch size problem)
@@ -364,7 +413,7 @@ class HGARME(nn.Module):
             hidden_rep[mask_nodes] = 0.0
 
             if self.decoder_type == "HGraphSAGE":
-                dec_rep, att_mp = self.decoder[use_ntype](subgs, 1, relations, use_ntype, hidden_rep, src_x, "decoder")
+                dec_rep, att_mp = self.decoder(subgs, 1, relations, use_ntype, hidden_rep, src_x, "decoder")
             elif self.decoder_type == "MLP":
                 dec_rep = self.decoder(hidden_rep)
             ## calculate all type nodes feature reconstruction

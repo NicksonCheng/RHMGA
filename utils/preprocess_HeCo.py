@@ -17,6 +17,8 @@ from dgl.data.utils import (
     generate_mask_tensor,
     idx2mask,
 )
+from dgl.nn.pytorch import MetaPath2Vec
+from utils.evaluate import metapath2vec_train
 
 
 class HeCoDataset(DGLDataset):
@@ -39,10 +41,12 @@ class HeCoDataset(DGLDataset):
     * AMinerHeCoDataset
     """
 
-    def __init__(self, reverse_edge, name, ntypes):
+    def __init__(self, reverse_edge: bool, use_feat: str, device: int, name, ntypes):
         url = "https://api.github.com/repos/liun-online/HeCo/zipball/main"
         self._ntypes = {ntype[0]: ntype for ntype in ntypes}
         self._label_ratio = ["20", "40", "60"]
+        self.use_feat = use_feat
+        self.device = torch.device(f"cuda:{device}" if torch.cuda.is_available() else "cpu")
         super().__init__(name + "-heco", url)
 
     def download(self):
@@ -59,17 +63,17 @@ class HeCoDataset(DGLDataset):
         )
 
     def save(self):
-        # if self.has_cache():
-        #     return
-        save_graphs(os.path.join(self.save_path, self.name + "_dgl_graph.bin"), [self.g])
+        if self.has_cache():
+            return
+        save_graphs(os.path.join(self.save_path, self.name + f"_dgl_graph_{self.use_feat}.bin"), [self.g])
         save_info(
             os.path.join(self.raw_path, self.name + "_pos.pkl"),
             {"pos_i": self.pos_i, "pos_j": self.pos_j},
         )
 
     def load(self):
-        print(f"load: {self.save_path}/{self.name} _dgl_graph.bin")
-        graphs, _ = load_graphs(os.path.join(self.save_path, self.name + "_dgl_graph.bin"))
+        print(f"load: {self.save_path}/{self.name}_dgl_graph{self.use_feat}.bin")
+        graphs, _ = load_graphs(os.path.join(self.save_path, self.name + f"_dgl_graph_{self.use_feat}.bin"))
         self.g = graphs[0]
         ntype = self.predict_ntype
         self._num_classes = self.g.nodes[ntype].data["label"].max().item() + 1
@@ -82,14 +86,20 @@ class HeCoDataset(DGLDataset):
         self.pos_i, self.pos_j = info["pos_i"], info["pos_j"]
 
     def process(self):
-        # if self.has_cache():
-        #     return
+        if self.has_cache():
+            return
         print("process")
-        self.g = dgl.heterograph(self._read_edges())
-
-        feats = self._read_feats()
-        for ntype, feat in feats.items():
-            self.g.nodes[ntype].data["feat"] = feat
+        self._read_edges()
+        origin_feats = self._read_feats()
+        if self.use_feat != "origin":
+            meta2vec_feat = self._read_meta2vec_feat()
+        for ntype, feat in origin_feats.items():
+            if self.use_feat == "origin":
+                self.g.nodes[ntype].data["feat"] = feat
+            elif self.use_feat == "meta2vec":
+                self.g.nodes[ntype].data["feat"] = meta2vec_feat[ntype]
+            else:
+                self.g.nodes[ntype].data["feat"] = torch.hstack([feat, meta2vec_feat[ntype]])
 
         labels = torch.from_numpy(np.load(os.path.join(self.raw_path, "labels.npy"))).long()
         self._num_classes = labels.max().item() + 1
@@ -124,7 +134,17 @@ class HeCoDataset(DGLDataset):
                 src_name, dst_name = self._ntypes[u], self._ntypes[v]
                 edges[(src_name, f"{src_name}-{dst_name}", dst_name)] = (src, dst)
                 edges[(dst_name, f"{dst_name}-{src_name}", src_name)] = (dst, src)
-        return edges
+        self.g = dgl.heterograph(edges)
+
+        for ntype in self._ntypes.values():
+            ntype_num_nodes = self.g.num_nodes(ntype)
+            ntype_nei_degree = {ntype: torch.zeros(ntype_num_nodes) for ntype in self._ntypes.values()}
+            use_relations = [rel_tuple for rel_tuple in self._relations if rel_tuple[2] == ntype]
+            for rel_tuple in use_relations:
+                src, rel, dst = rel_tuple
+                ntype_nei_degree[src] = self.g.in_degrees(torch.arange(ntype_num_nodes), etype=rel)
+            self.g.nodes[ntype].data["in_degree"] = torch.stack([ntype_nei_degree[ntype] for ntype in self._ntypes.values()], dim=1)
+            # print(self.g.nodes[ntype].data["in_degree"].shape)
 
     def _read_feats(self):
         feats = {}
@@ -134,8 +154,24 @@ class HeCoDataset(DGLDataset):
                 feats[self._ntypes[u]] = torch.from_numpy(sp.load_npz(file).toarray()).float()
         return feats
 
+    def _read_meta2vec_feat(self):
+        ## add metapath2vec feature
+        ntype_feats = {}
+        for ntype, metapath in self.metapaths.items():
+            wd_size = len(metapath) + 1
+            metapath_model = MetaPath2Vec(self.g, metapath, wd_size, 512, 3, True)
+            metapath2vec_train(self.g, ntype, metapath_model, 50, self.device)
+
+            user_nids = torch.LongTensor(metapath_model.local_to_global_nid[ntype]).to(self.device)
+            mp2vec_emb = metapath_model.node_embed(user_nids).detach().cpu()
+            ntype_feats[ntype] = mp2vec_emb
+            del metapath_model
+            torch.cuda.empty_cache()
+        return ntype_feats
+
     def has_cache(self):
-        return os.path.exists(os.path.join(self.save_path, self.name + "_dgl_graph.bin"))
+        # return False
+        return os.path.exists(os.path.join(self.save_path, self.name + f"_dgl_graph_{self.use_feat}.bin"))
 
     def __getitem__(self, idx):
         if idx != 0:
@@ -287,7 +323,7 @@ class FreebaseHeCoDataset(HeCoDataset):
     * train_mask, val_mask, test_mask: tensor(N_movie)
     """
 
-    def __init__(self, reverse_edge):
+    def __init__(self, reverse_edge: bool, use_feat: str, device: int):
         self._relations = [
             ("author", "author-movie", "movie"),
             ("director", "director-movie", "movie"),
@@ -296,10 +332,9 @@ class FreebaseHeCoDataset(HeCoDataset):
             ("movie", "movie-director", "director"),
             ("movie", "movie-writer", "writer"),
         ]
-        super().__init__(reverse_edge, "freebase", ["movie", "author", "director", "writer"])
+        super().__init__(reverse_edge, use_feat, device, "freebase", ["movie", "author", "director", "writer"])
 
     def _read_feats(self):
-
         feats = {}
         for t in self._ntypes.values():
             num_t = self.g.num_nodes(t)
@@ -310,7 +345,12 @@ class FreebaseHeCoDataset(HeCoDataset):
 
     @property
     def metapaths(self):
-        return [["ma", "am"], ["md", "dm"], ["mw", "wm"]]
+        return {
+            "movie": ["movie-author", "author-movie", "movie-director", "director-movie", "movie-writer", "writer-movie"],
+            "author": ["author-movie", "movie-author"],
+            "director": ["director-movie", "movie-director"],
+            "writer": ["writer-movie", "movie-writer"],
+        }
 
     @property
     def relations(self):

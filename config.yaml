@@ -110,7 +110,7 @@ heco_freebase:
   batch_size: 512
   eva_interval: 10
   eva_epoches: 200
-  num_layer: 3
+  num_layer: 1
   num_heads: 8
   num_out_heads: 1
   num_hidden: 512
@@ -127,8 +127,10 @@ heco_freebase:
   scheduler: True
   edge_recons: True
   feat_recons: True
+  degree_recons: True
   all_feat_recons: True
   all_edge_recons: True
+  all_degree_recons: True
   mp2vec_feat: False
 
 PubMed:
@@ -137,7 +139,7 @@ PubMed:
   batch_size: 512
   eva_interval: 10
   eva_epoches: 200
-  num_layer: 3
+  num_layer: 1
   num_heads: 8
   num_out_heads: 1
   num_hidden: 512
@@ -188,7 +190,7 @@ Yelp:
 Freebase:
   dataset: "Freebase"
   epoches: 500
-  batch_size: 1024
+  batch_size: 512
   eva_interval: 10
   eva_epoches: 50
   num_layer: 3
@@ -213,3 +215,29 @@ Freebase:
   mp2vec_feat: False
 
 
+DBLP2:
+  dataset: "DBLP2"
+  epoches: 500
+  batch_size: 1024
+  eva_interval: 10
+  eva_epoches: 100
+  num_layer: 1
+  num_heads: 8
+  num_out_heads: 1
+  num_hidden: 256
+  lr: 0.001
+  mask_rate: 0.5
+  dropout: 0.4
+  encoder: "HGraphSAGE"
+  decoder: "HGraphSAGE"
+  weight_decay: 0.0001
+  eva_lr: 0.01
+  eva_wd: 0.0001
+  gamma: 3
+  devices: 0
+  scheduler: True
+  edge_recons: True
+  feat_recons: True
+  all_feat_recons: True
+  all_edge_recons: True
+  mp2vec_feat: False

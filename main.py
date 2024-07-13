@@ -16,7 +16,6 @@ import matplotlib.pyplot as plt
 import networkx as nx
 import scipy.sparse as sp
 from dgl.dataloading import DataLoader, MultiLayerFullNeighborSampler, MultiLayerNeighborSampler
-from utils.preprocess_DBLP import DBLP4057Dataset, DBLPFourAreaDataset
 from utils.preprocess_ACM import ACMDataset
 from utils.preprocess_HeCo import (
     DBLPHeCoDataset,
@@ -26,33 +25,22 @@ from utils.preprocess_HeCo import (
 )
 from utils.preprocess_IMDB import IMDbDataset
 from utils.preprocess_Freebase import FreebaseDataset
+from utils.preprocess_DBLP2 import DBLP2Dataset
 from utils.preprocess_Yelp import YelpDataset
 from utils.preprocess_PubMed import PubMedDataset
 from utils.evaluate import LGS_node_classification_evaluate, node_classification_evaluate, node_clustering_evaluate, metapath2vec_train
-
+from utils.link_prediction import lp_evaluate
 from utils.utils import load_config, colorize, name_file, visualization
 from models.HGARME import HGARME
 from models.HAN import HAN
 from tqdm import tqdm
 from collections import Counter
 from sklearn.manifold import TSNE
+import torchviz
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
 
-# device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
-# device_0 = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-# device_1 = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 heterogeneous_dataset = {
-    # "dblp": DBLPFourAreaDataset,
-    # "acm": ACMDataset,
-    # "heco_acm": {"name": ACMHeCoDataset, "relations": [("author", "ap", "paper")]},
-    # "heco_dblp": {
-    #     "name": DBLPHeCoDataset,
-    #     # 'relations': [('paper', 'pa', 'author'), ('paper', 'pt', 'term'),(('paper', 'pc', 'conference'))]
-    #     "relations": [
-    #         ("paper", "pa", "author"),
-    #     ],
-    # },
     "heco_dblp": {
         "name": DBLPHeCoDataset,
     },
@@ -73,6 +61,9 @@ heterogeneous_dataset = {
     },
     "Freebase": {
         "name": FreebaseDataset,
+    },
+    "DBLP2": {
+        "name": DBLP2Dataset,
     },
 }
 
@@ -120,8 +111,7 @@ def train(args):
     start_t = time.time()
     # torch.cuda.set_device()
     device_0 = torch.device(f"cuda:{args.devices}" if torch.cuda.is_available() else "cpu")
-    device_1 = torch.device(f"cuda:{args.devices}" if torch.cuda.is_available() else "cpu")
-    data = heterogeneous_dataset[args.dataset]["name"](args.reverse_edge)
+    data = heterogeneous_dataset[args.dataset]["name"](args.reverse_edge, args.use_feat, args.devices)
     print("Preprocessing Time taken:", time.time() - start_t, "seconds")
     start_t = time.time()
     relations = data.relations
@@ -134,26 +124,29 @@ def train(args):
 
     if args.mp2vec_feat:
         ## add metapath2vec feature
-        metapath = ["movie-author", "author-movie", "movie-director", "director-movie", "movie-writer", "writer-movie"]
+        metapaths = {
+            "movie": ["movie-author", "author-movie", "movie-director", "director-movie", "movie-writer", "writer-movie"],
+            "author": ["author-movie", "movie-author"],
+            "director": ["director-movie", "movie-director"],
+            "writer": ["writer-movie", "movie-writer"],
+        }
+        for ntype, metapath in metapaths.items():
+            wd_size = len(metapath) + 1
+            metapath_model = MetaPath2Vec(graph, metapath, wd_size, args.num_hidden, 3, True)
+            metapath2vec_train(args, graph, ntype, metapath_model, 50, device_0)
 
-        metapath_model = MetaPath2Vec(graph, metapath, 4, args.num_hidden, 3, True)
-        metapath2vec_train(args, graph, target_type, metapath_model, 50, device_0)
+            user_nids = torch.LongTensor(metapath_model.local_to_global_nid[ntype]).to(device_0)
+            mp2vec_emb = metapath_model.node_embed(user_nids).detach()
 
-        user_nids = torch.LongTensor(metapath_model.local_to_global_nid[target_type]).to(device_0)
-        mp2vec_emb = metapath_model.node_embed(user_nids).detach()
-
-        original_feat = graph.nodes[target_type].data["feat"]
-        graph.nodes[target_type].data["feat"] = mp2vec_emb
-
-        graph.nodes[target_type].data["feat"] = torch.hstack([original_feat, mp2vec_emb])
-        ## free memory
-        del metapath_model
-        torch.cuda.empty_cache()
-
+            # original_feat = graph.nodes[target_type].data["feat"]
+            graph.nodes[ntype].data["feat"] = mp2vec_emb
+            # graph.nodes[target_type].data["feat"] = torch.hstack([original_feat, mp2vec_emb])
+            ## free memory
+            del metapath_model
+            torch.cuda.empty_cache()
     num_classes = data.num_classes
     features = {t: graph.nodes[t].data["feat"] for t in all_types if "feat" in graph.nodes[t].data}
     train_nids = {ntype: torch.arange(graph.num_nodes(ntype)).to(device_0) for ntype in all_types}
-
     masked_graph = {}
     if data.has_label_ratio:
         for ratio in data.label_ratio:
@@ -189,11 +182,6 @@ def train(args):
         ntype_in_dim={ntype: feat.shape[1] for ntype, feat in features.items()},
         args=args,
     )
-    # if torch.cuda.is_available() and torch.cuda.device_count() > 1:
-    #     # model = nn.DataParallel(model)
-    #     model = torch.nn.parallel.DistributedDataParallel(
-    #         model, device_ids=[args.devices], output_device=args.devices
-    #     )
     model = model.to(device_0)
     # Define learnable weights for the loss components
     raw_weights = nn.Parameter(torch.tensor([0.5, 0.5], requires_grad=True))
@@ -222,36 +210,42 @@ def train(args):
     best_epoches = 0
     min_loss = 1e8
     wait_count = 0
+    accu_step = 4
     # print(f"Model Allocated Memory: {torch.cuda.memory_allocated() / (1024**2):.2f} MB")
-    with open(file_name, "a") as log_file:
-        log_file.write(f"{str(args)}\n")
+    curr_mask, step_mask, end_mask = [float(i) for i in args.dynamic_mask_rate.split(",")]
+
     for epoch in tqdm(range(args.epoches), total=args.epoches, desc=colorize("Epoch Training", "blue")):
         model.train()
         train_loss = 0.0
-        optimizer.zero_grad()
         for i, mini_batch in enumerate(dataloader):
-
             src_nodes, dst_nodes, subgs = mini_batch
 
-            # print("----------------------------------")
-            # for rels_tuple in relations:
-            #     print(f"{rels_tuple}: {subgs[1].num_edges(rels_tuple)}")
-            # print("----------------------------------")
-            feat_loss, adj_loss = model(subgs, relations, epoch)
-            # weight = torch.softmax(raw_weights, dim=0)
-            # edge_weight, feat_weight = weight[0], weight[1]
-            feat_weight = 1
-            edge_weight = 1
-            loss = feat_weight * feat_loss + edge_weight * adj_loss
+            feat_loss, adj_loss, degree_loss = model(subgs, relations, epoch, curr_mask, i)
+            # print(feat_loss, adj_loss, degree_loss * 0.01)
+            alpha = 0.003
+            # loss = alpha * degree_loss + (1 - alpha) * (adj_loss)
+            loss = feat_loss + adj_loss
+            # print(loss)
             train_loss += loss.item()
-
             loss.backward()
-
-            # print(f"Batch {i} Loss: {loss.item()}")
-            # print(f"Batch {i} Allocated Memory: {torch.cuda.memory_allocated() / (1024**2):.2f} MB")
+            if not args.accumu_grad:
+                optimizer.step()
+                scheduler.step()
+                optimizer.zero_grad()
             # break
-        optimizer.step()
-        scheduler.step()
+        if args.accumu_grad:
+            optimizer.step()
+            scheduler.step()
+            optimizer.zero_grad()
+
+        # print(f"Batch {i} Loss: {loss.item()}")
+        # print(f"Batch {i} Allocated Memory: {torch.cuda.memory_allocated() / (1024**2):.2f} MB")
+
+        # if (i + 1) % accu_step == 0:
+        #     optimizer.step()
+        #     scheduler.step()
+        #     optimizer.zero_grad()
+        # break
         avg_train_loss = train_loss / len(dataloader)
         print(f"Epoch:{epoch+1}/{args.epoches} Training Loss:{(avg_train_loss)} Learning_rate={scheduler.get_last_lr()}")
         total_loss.append(avg_train_loss)
@@ -259,16 +253,22 @@ def train(args):
             min_loss = avg_train_loss
             best_model_dict = model.state_dict()
             best_epoches = epoch + 1
-            torch.save(model.state_dict(), f"best_{args.dataset}.pth")
-        ## Evaluate Embedding Performance
-        if epoch > 0 and ((epoch + 1) % args.eva_interval) == 0:
+        else:
+            wait_count += 1
+        if wait_count > 5:
+            ## Evaluate Embedding Performance
+            # if epoch > 0 and ((epoch + 1) % args.eva_interval) == 0:
+            model.load_state_dict(best_model_dict)
             model.eval()
             # print(f"feat weight{feat_weight.item()} edge weight{edge_weight.item()}")
             # if True:
             file_name = name_file(args, "log", log_times)
             with open(file_name, "a") as log_file:
-                log_file.write(f"Epoches:{epoch}-----------------------------------\n")
-                log_file.write(f"Loss:{avg_train_loss}\n")
+                if os.path.getsize(file_name) == 0:
+                    log_file.write(f"{args}\n")
+                log_file.write(f"Best Epoches:{best_epoches}-----------------------------------\n")
+                log_file.write("Current Mask Rate:{}\n".format(curr_mask))
+                log_file.write(f"Loss:{min_loss}\n")
                 # enc_feat = features[target_type]
                 enc_feat, att_mp = model.encode_embedding(
                     graph,
@@ -278,13 +278,13 @@ def train(args):
                     "evaluation",
                 )
                 target_type_labels = graph.nodes[target_type].data["label"]
-                if args.task == "classification":
+                if args.task == "classification" or args.task == "all":
                     if data.has_label_ratio:
                         for ratio in data.label_ratio:
                             for split in masked_graph[ratio].keys():
                                 masked_graph[ratio][split] = masked_graph[ratio][split].detach()
                             mean, std = node_classification_evaluate(
-                                device_1, enc_feat, args, num_classes, target_type_labels.detach(), masked_graph[ratio], data.multilabel
+                                device_0, enc_feat, args, num_classes, target_type_labels.detach(), masked_graph[ratio], data.multilabel
                             )
 
                             if ratio not in performance:
@@ -307,11 +307,11 @@ def train(args):
                     else:
                         if args.dataset == "imdb":
                             mean, std = node_classification_evaluate(
-                                device_1, enc_feat, args, num_classes, target_type_labels, masked_graph, data.multilabel
+                                device_0, enc_feat, args, num_classes, target_type_labels, masked_graph, data.multilabel
                             )
                         else:
                             mean, std = LGS_node_classification_evaluate(
-                                device_1, enc_feat, args, num_classes, target_type_labels, masked_graph, data.multilabel
+                                device_0, enc_feat, args, num_classes, target_type_labels, masked_graph, data.multilabel
                             )
 
                         if not performance:
@@ -339,7 +339,7 @@ def train(args):
                         #         std["macro_f1"],
                         #     )
                         # )
-                elif args.task == "clustering":
+                if args.task == "clustering" or args.task == "all":
                     nmi_list, ari_list = [], []
 
                     if not data.has_label_ratio:
@@ -352,13 +352,26 @@ def train(args):
                         nmi_list.append(nmi)
                         ari_list.append(ari)
                     log_file.write(
-                        "\t[clustering] nmi: [{:.4f}, {:.4f}] ari: [{:.4f}, {:.4f}]".format(
+                        "\t[clustering] nmi: [{:.4f}, {:.4f}] ari: [{:.4f}, {:.4f}]\n".format(
                             np.mean(nmi_list), np.std(nmi_list), np.mean(ari_list), np.std(ari_list)
                         )
                     )
 
                     ## plot t-SNE result
-                    visualization(enc_feat, target_type_labels, log_times, epoch)
+                    # visualization(args.dataset, enc_feat, target_type_labels, log_times, best_epoches)
+                # else:
+                #     auc, mrr = lp_evaluate(f"data/CKD_data/{args.dataset}/", enc_feat)
+                #     log_file.write(f"\t AUC: {auc} MRR: {mrr}")
+                # elif args.task == "link_prediction":
+                #     auc, mrr = lp_evaluate(data.test_file, enc_feat)
+                #     log_file.write(f"\t AUC: {auc} MRR: {mrr}")
+
+                curr_mask += step_mask
+                curr_mask = min(curr_mask, end_mask)
+                wait_count = 0
+                # best_model_dict = None
+                best_epoches = 0
+                # min_loss = 1e8
 
     ####
     ## plot the performance
@@ -405,7 +418,7 @@ if __name__ == "__main__":
     parser.add_argument("--num_hidden", type=int, default=256, help="number of hidden units")
     parser.add_argument("--lr", type=float, default=0.001, help="learning rate")
     parser.add_argument("--mask_rate", type=float, default=0.4, help="mask rate")
-    parser.add_argument("--dynamic_mask_rate", type=str, default="0.4,0.003,0.8", help="dynamic mask rate")
+    parser.add_argument("--dynamic_mask_rate", type=str, default="0.4,0.01,0.8", help="dynamic mask rate")
     parser.add_argument("--dropout", type=float, default=0.4, help="dropout probability")
     parser.add_argument("--encoder", type=str, default="HAN", help="heterogeneous encoder")
     parser.add_argument("--decoder", type=str, default="HAN", help="Heterogeneous decoder")
@@ -417,13 +430,17 @@ if __name__ == "__main__":
     parser.add_argument("--scheduler", default=True, help="scheduler for optimizer")
     parser.add_argument("--edge_recons", default=True, help="edge reconstruction")
     parser.add_argument("--feat_recons", default=True, help="feature reconstruction")
+    parser.add_argument("--degree_recons", default=True, help="degree reconstruction")
     parser.add_argument("--all_feat_recons", default=True, help="used all type node feature reconstruction")
     parser.add_argument("--all_edge_recons", default=True, help="use all type node edge reconstruction")
+    parser.add_argument("--all_degree_recons", default=True, help="use all type node degree reconstruction")
     parser.add_argument("--use_config", default=True, help="use best parameter in config.yaml ")
     parser.add_argument("--reverse_edge", default=True, help="add reverse edge or not")
     parser.add_argument("--mp2vec_feat", default=True, help="add reverse edge or not")
     parser.add_argument("--task", default="classification", help="downstream task")
     parser.add_argument("--nei_sample", type=str, default="full", help="multilayer neighbor sample")
+    parser.add_argument("--accumu_grad", type=bool, default=False, help="use accumulate gradient")
+    parser.add_argument("--use_feat", default="origin", help="way for original feature construction")
     known_args, unknow_args = parser.parse_known_args()
 
     cmd_args = [arg.lstrip("-") for arg in sys.argv[1:] if arg.startswith("--")]
@@ -437,8 +454,6 @@ if __name__ == "__main__":
         if value == "True" or value == "False":
             value = eval(value)
         setattr(known_args, arg, value)
-    # device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
-    num_gpus = torch.cuda.device_count()
 
     print(known_args)
     train(args=known_args)

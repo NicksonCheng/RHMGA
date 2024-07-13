@@ -11,40 +11,24 @@ from collections import Counter
 from sklearn.model_selection import train_test_split, StratifiedKFold
 
 
-class PubMedDataset(DGLDataset):
-    def __init__(
-        self, reverse_edge, use_feat: str = "meta2vec", device: int = 0, url=None, raw_dir=None, save_dir=None, force_reload=False, verbose=False
-    ):
+class DBLP2Dataset(DGLDataset):
+    def __init__(self, reverse_edge, url=None, raw_dir=None, save_dir=None, force_reload=False, verbose=False):
         self.graph = HeteroData()
-        self._ntypes = {"G": "Gene", "D": "Disease", "C": "Chemical", "S": "Species"}
+        self._ntypes = {"P": "Phrase", "A": "Author", "V": "Venue", "Y": "Year"}
         self._relations = [
-            ("Gene", "Gene-Gene", "Gene"),
-            ("Gene", "Gene-Disease", "Disease"),
-            ("Disease", "Disease-Disease", "Disease"),
-            ("Chemical", "Chemical-Gene", "Gene"),
-            ("Chemical", "Chemical-Disease", "Disease"),
-            ("Chemical", "Chemical-Chemical", "Chemical"),
-            ("Chemical", "Chemical-Species", "Species"),
-            ("Species", "Species-Gene", "Gene"),
-            ("Species", "Species-Disease", "Disease"),
-            ("Species", "Species-Species", "Species"),
-        ]
-        self._classes = [
-            "cardiovascular_disease",
-            "glandular_disease",
-            "nervous_disorder",
-            "communicable_disease",
-            "inflammatory_disease",
-            "pycnosis",
-            "skin_disease",
-            "cancer",
+            ("Phrase", "co-occur", "Phrase"),
+            ("Author", "co-author", "Author"),
+            ("Author", "cite", "Author"),
+            ("Author", "study", "Phrase"),
+            ("Author", "publish-in", "Venue"),
+            ("Author", "active-in", "Year"),
         ]
         curr_dir = os.path.dirname(__file__)
         parent_dir = os.path.dirname(curr_dir)
-        self.data_path = os.path.join(parent_dir, "data/CKD_data/PubMed")
+        self.data_path = os.path.join(parent_dir, "data/CKD_data/DBLP2")
         self.add_reverse_relation()
-        super(PubMedDataset, self).__init__(
-            name="pubmed",
+        super(DBLP2Dataset, self).__init__(
+            name="dblp2",
             url=url,
             raw_dir=raw_dir,
             save_dir=save_dir,
@@ -64,12 +48,12 @@ class PubMedDataset(DGLDataset):
 
     def load(self):
         print("loading graph")
-        graphs, _ = load_graphs(os.path.join(self.data_path, "PubMed_dgl_graph.bin"))
+        graphs, _ = load_graphs(os.path.join(self.data_path, "DBLP2_dgl_graph.bin"))
         self.graph = graphs[0]
 
     def save(self):
         print("saving graph")
-        save_graphs(os.path.join(self.data_path, "PubMed_dgl_graph.bin"), [self.graph])
+        save_graphs(os.path.join(self.data_path, "DBLP2_dgl_graph.bin"), [self.graph])
 
     def process(self):
         nodes_file = pd.read_csv(
@@ -121,8 +105,7 @@ class PubMedDataset(DGLDataset):
             node_dict[ntype]["id"] = sort_id
             node_dict[ntype]["feat"] = torch.tensor(sort_feat)
         np.save(os.path.join(self.data_path, "target_node_dict.npy"), np.array(node_dict[self.predict_ntype]["id"]))
-        self._read_edges(node_dict)
-
+        self.graph = dgl.heterograph(self._read_edges(node_dict))
         self._read_feats_labels(node_dict)
 
     def _read_edges(self, node_dict):
@@ -155,17 +138,8 @@ class PubMedDataset(DGLDataset):
                 else:
                     edges[rev_rel][0].append(map_d_id)
                     edges[rev_rel][1].append(map_s_id)
-        self.graph = dgl.heterograph(edges)
 
-        for ntype in self._ntypes.values():
-            ntype_num_nodes = self.graph.num_nodes(ntype)
-            ntype_nei_degree = {ntype: torch.zeros(ntype_num_nodes) for ntype in self._ntypes.values()}
-            use_relations = [rel_tuple for rel_tuple in self._relations if rel_tuple[2] == ntype]
-            for rel_tuple in use_relations:
-                src, rel, dst = rel_tuple
-                ntype_nei_degree[src] = self.graph.in_degrees(torch.arange(ntype_num_nodes), etype=rel)
-            self.graph.nodes[ntype].data["in_degree"] = torch.stack([ntype_nei_degree[ntype] for ntype in self._ntypes.values()], dim=1)
-            # print(self.g.nodes[ntype].data["in_degree"].shape)
+        return edges
 
     def _read_feats_labels(self, node_dict):
         split_ratio = {"train": 0.8, "val": 0.1, "test": 0.1}
@@ -208,12 +182,11 @@ class PubMedDataset(DGLDataset):
         # }
         label_nodes_indices = np.array(label_nodes_indices)
         mask = generate_mask_tensor(idx2mask(label_nodes_indices, pred_num_nodes))
-
         self.graph.nodes[self.predict_ntype].data["total"] = torch.tensor(mask)
 
     def has_cache(self):
         # return False
-        return os.path.exists(os.path.join(self.data_path, "PubMed_dgl_graph.bin"))
+        return os.path.exists(os.path.join(self.data_path, "DBLP2_dgl_graph.bin"))
 
     def __getitem__(self, i):
         return self.graph
@@ -223,7 +196,7 @@ class PubMedDataset(DGLDataset):
 
     @property
     def num_classes(self):
-        return len(self._classes)
+        return 13
 
     @property
     def relations(self):
@@ -231,7 +204,7 @@ class PubMedDataset(DGLDataset):
 
     @property
     def predict_ntype(self):
-        return "Disease"
+        return "Author"
 
     @property
     def has_label_ratio(self):
