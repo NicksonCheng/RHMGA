@@ -150,8 +150,12 @@ class HeCoDataset(DGLDataset):
         feats = {}
         for u in self._ntypes:
             file = os.path.join(self.raw_path, f"{u}_feat.npz")
+            ntype=self._ntypes[u]
             if os.path.exists(file):
-                feats[self._ntypes[u]] = torch.from_numpy(sp.load_npz(file).toarray()).float()
+                feats[ntype] = torch.from_numpy(sp.load_npz(file).toarray()).float()
+            else:
+                num_t = self.g.num_nodes(ntype)
+                feats[ntype]=torch.from_numpy(sp.eye(num_t).toarray()).float()
         return feats
 
     def _read_meta2vec_feat(self):
@@ -170,7 +174,7 @@ class HeCoDataset(DGLDataset):
         return ntype_feats
 
     def has_cache(self):
-        # return False
+        return False
         return os.path.exists(os.path.join(self.save_path, self.name + f"_dgl_graph_{self.use_feat}.bin"))
 
     def __getitem__(self, idx):
@@ -236,9 +240,16 @@ class ACMHeCoDataset(HeCoDataset):
     * feat: tensor(7167, 1902)
     """
 
-    def __init__(self):
-        super().__init__("acm", ["paper", "author", "subject"])
-
+    def __init__(self, reverse_edge, use_feat, device):
+        
+        self._relations = [
+            ("paper", "paper-author", "author"),
+            ("paper", "paper-subject", "subject"),
+            ("author", "author-paper", "paper"),
+            ("subject", "subject-paper", "paper"),
+        ]
+        super().__init__(reverse_edge,use_feat,device,"acm", ["paper", "author", "subject"])
+        
     @property
     def metapaths(self):
         return [["pa", "ap"], ["ps", "sp"]]
@@ -246,6 +257,10 @@ class ACMHeCoDataset(HeCoDataset):
     @property
     def predict_ntype(self):
         return "paper"
+
+    @property
+    def relations(self):
+        return self._relations
 
 
 class DBLPHeCoDataset(HeCoDataset):
@@ -274,7 +289,7 @@ class DBLPHeCoDataset(HeCoDataset):
     * feat: tensor(7723, 50)
     """
 
-    def __init__(self, reverse_edge):
+    def __init__(self, reverse_edge:bool,use_feat:str, device:int):
         self._relations = [
             ("author", "author-paper", "paper"),
             ("conference", "conference-paper", "paper"),
@@ -283,7 +298,7 @@ class DBLPHeCoDataset(HeCoDataset):
             ("paper", "paper-conference", "conference"),
             ("paper", "paper-term", "term"),
         ]
-        super().__init__(reverse_edge, "dblp", ["author", "paper", "conference", "term"])
+        super().__init__(reverse_edge,use_feat,device, "dblp", ["author", "paper", "conference", "term"])
 
     def _read_feats(self):
         feats = {}
@@ -291,6 +306,8 @@ class DBLPHeCoDataset(HeCoDataset):
             file = os.path.join(self.raw_path, f"{u}_feat.npz")
             feats[self._ntypes[u]] = torch.from_numpy(sp.load_npz(file).toarray()).float()
         feats["term"] = torch.from_numpy(np.load(os.path.join(self.raw_path, "t_feat.npz"))).float()
+        num_t = self.g.num_nodes("conference")
+        feats["conference"]=torch.from_numpy(sp.eye(num_t).toarray()).float()
         return feats
 
     @property
@@ -378,14 +395,14 @@ class AMinerHeCoDataset(HeCoDataset):
     * train_mask, val_mask, test_mask: tensor(N_paper)
     """
 
-    def __init__(self, reverse_edge):
+    def __init__(self, reverse_edge, use_feat, device):
         self._relations = [
             ("paper", "paper-author", "author"),
             ("paper", "paper-reference", "reference"),
             ("author", "author-paper", "paper"),
             ("reference", "reference-paper", "paper"),
         ]
-        super().__init__(reverse_edge, "aminer", ["paper", "author", "reference"])
+        super().__init__(reverse_edge,use_feat,device, "aminer", ["paper", "author", "reference"])
 
     def _read_feats(self):
 

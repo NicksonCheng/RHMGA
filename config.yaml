@@ -27,95 +27,17 @@ imdb:
 
 heco_acm:
   dataset: "heco_acm"
-  epoches: 1000
-  eva_epoches: 50
-  num_layer: 2
-  num_heads: 4
-  num_out_heads: 1
-  num_hidden: 1024
-  lr: 0.0008
-  mask_rate: 0.4
-  dropout: 0.4
-  encoder: "SRN"
-  decoder: "HAN"
-  weight_decay: 0
-  eva_lr: 0.01
-  eva_wd: 0.0005
-  gamma: 3
-  devices: 1
-  num_layer: 3
-  num_heads: 8
-  num_out_heads: 1
-  scheduler: True
-
-heco_dblp:
-  dataset: "heco_dblp"
   epoches: 500
-  batch_size: 1024
-  eva_interval: 10
-  eva_epoches: 50
-  num_layer: 1
-  num_heads: 4
-  num_out_heads: 1
-  num_hidden: 256
-  lr: 0.001
-  mask_rate: 0.4
-  dropout: 0.4
-  encoder: "HGraphSAGE"
-  decoder: "HGraphSAGE"
-  weight_decay: 0.0001
-  eva_lr: 0.01
-  eva_wd: 0.0001
-  gamma: 3
-  devices: 0
-  scheduler: True
-  edge_recons: True
-  feat_recons: True
-  all_feat_recons: True
-  all_edge_recons: True
-  mp2vec_feat: False
-
-
-heco_aminer:
-  dataset: "heco_aminer"
-  epoches: 500
-  batch_size: 512
-  eva_interval: 10
-  eva_epoches: 50
-  num_layer: 3
-  num_heads: 8
-  num_out_heads: 1
-  num_hidden: 1024
-  lr: 0.0008
-  mask_rate: 0.4
-  dropout: 0.4
-  encoder: "HGraphSAGE"
-  decoder: "HGraphSAGE"
-  weight_decay: 0.0001
-  eva_lr: 0.01
-  eva_wd: 0.0001
-  gamma: 3
-  devices: 0
-  scheduler: True
-  edge_recons: True
-  feat_recons: True
-  all_feat_recons: True
-  all_edge_recons: True
-  mp2vec_feat: False
-
-
-heco_freebase:
-  dataset: "heco_freebase"
-  epoches: 500
-  batch_size: 512
+  batch_size: 8192
   eva_interval: 10
   eva_epoches: 200
-  num_layer: 1
+  num_layer: 2
   num_heads: 8
   num_out_heads: 1
-  num_hidden: 512
-  lr: 0.001
+  num_hidden: 1024
+  lr: 0.0008
   mask_rate: 0.5
+  dynamic_mask_rate: 0.4,0.002,0.8
   dropout: 0.4
   encoder: "HGraphSAGE"
   decoder: "HGraphSAGE"
@@ -132,6 +54,100 @@ heco_freebase:
   all_edge_recons: True
   all_degree_recons: True
   mp2vec_feat: False
+  accumu_grad: True
+
+heco_dblp:
+  dataset: "heco_dblp"
+  epoches: 500
+  batch_size: 2048
+  eva_interval: 10
+  eva_epoches: 200
+  num_layer: 1
+  num_heads: 8
+  num_out_heads: 1
+  num_hidden: 512
+  lr: 0.0008
+  mask_rate: 0.5
+  dynamic_mask_rate: 0.4,0.002,0.8
+  dropout: 0.4
+  encoder: "HGraphSAGE"
+  decoder: "HGraphSAGE"
+  weight_decay: 0.0001
+  eva_lr: 0.01
+  eva_wd: 0.0001
+  gamma: 3
+  devices: 0
+  scheduler: True
+  edge_recons: True
+  feat_recons: True
+  degree_recons: True
+  all_feat_recons: True
+  all_edge_recons: True
+  all_degree_recons: True
+  mp2vec_feat: False
+  accumu_grad: True
+
+
+heco_aminer:
+  dataset: "heco_aminer"
+  epoches: 500
+  batch_size: 512
+  eva_interval: 10
+  eva_epoches: 50
+  num_layer: 3
+  num_heads: 8
+  num_out_heads: 1
+  num_hidden: 512
+  lr: 0.0008
+  mask_rate: 0.4
+  dynamic_mask_rate: 0.4,0.002,0.8
+  dropout: 0.4
+  encoder: "HGraphSAGE"
+  decoder: "HGraphSAGE"
+  weight_decay: 0.0001
+  eva_lr: 0.01
+  eva_wd: 0.0001
+  gamma: 3
+  devices: 0
+  scheduler: True
+  edge_recons: True
+  feat_recons: True
+  all_feat_recons: True
+  all_edge_recons: True
+  mp2vec_feat: False
+  accumu_grad: True
+
+
+heco_freebase:
+  dataset: "heco_freebase"
+  epoches: 500
+  batch_size: 512
+  eva_interval: 10
+  eva_epoches: 200
+  num_layer: 1
+  num_heads: 8
+  num_out_heads: 1
+  num_hidden: 512
+  lr: 0.001
+  mask_rate: 0.5
+  dynamic_mask_rate: 0.4,0.002,0.8
+  dropout: 0.4
+  encoder: "HGraphSAGE"
+  decoder: "HGraphSAGE"
+  weight_decay: 0.0001
+  eva_lr: 0.01
+  eva_wd: 0.0001
+  gamma: 3
+  devices: 0
+  scheduler: True
+  edge_recons: True
+  feat_recons: True
+  degree_recons: True
+  all_feat_recons: True
+  all_edge_recons: True
+  all_degree_recons: True
+  mp2vec_feat: False
+  accumu_grad: False
 
 PubMed:
   dataset: "PubMed"

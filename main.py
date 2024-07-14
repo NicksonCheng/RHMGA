@@ -36,13 +36,15 @@ from models.HAN import HAN
 from tqdm import tqdm
 from collections import Counter
 from sklearn.manifold import TSNE
-import torchviz
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
 
 heterogeneous_dataset = {
     "heco_dblp": {
         "name": DBLPHeCoDataset,
+    },
+    "heco_acm": {
+        "name": ACMHeCoDataset,
     },
     "heco_freebase": {
         "name": FreebaseHeCoDataset,
@@ -120,6 +122,7 @@ def train(args):
 
     graph = data[0].to(device_0)
     all_types = list(data._ntypes.values())
+    print(all_types)
     target_type = data.predict_ntype
 
     if args.mp2vec_feat:
@@ -213,14 +216,17 @@ def train(args):
     accu_step = 4
     # print(f"Model Allocated Memory: {torch.cuda.memory_allocated() / (1024**2):.2f} MB")
     curr_mask, step_mask, end_mask = [float(i) for i in args.dynamic_mask_rate.split(",")]
-
+    
+    best_ari=0.0
+    best_nmi=0.0
+    best_cluster_diff=0.0
     for epoch in tqdm(range(args.epoches), total=args.epoches, desc=colorize("Epoch Training", "blue")):
         model.train()
         train_loss = 0.0
         for i, mini_batch in enumerate(dataloader):
             src_nodes, dst_nodes, subgs = mini_batch
 
-            feat_loss, adj_loss, degree_loss = model(subgs, relations, epoch, curr_mask, i)
+            curr_mask_rate, feat_loss, adj_loss, degree_loss = model(subgs, relations, epoch, curr_mask, i)
             # print(feat_loss, adj_loss, degree_loss * 0.01)
             alpha = 0.003
             # loss = alpha * degree_loss + (1 - alpha) * (adj_loss)
@@ -253,9 +259,10 @@ def train(args):
             min_loss = avg_train_loss
             best_model_dict = model.state_dict()
             best_epoches = epoch + 1
+            wait_count=0
         else:
             wait_count += 1
-        if wait_count > 5:
+        if wait_count > 5 or True:
             ## Evaluate Embedding Performance
             # if epoch > 0 and ((epoch + 1) % args.eva_interval) == 0:
             model.load_state_dict(best_model_dict)
@@ -267,7 +274,7 @@ def train(args):
                 if os.path.getsize(file_name) == 0:
                     log_file.write(f"{args}\n")
                 log_file.write(f"Best Epoches:{best_epoches}-----------------------------------\n")
-                log_file.write("Current Mask Rate:{}\n".format(curr_mask))
+                log_file.write("Current Mask Rate:{}\n".format(curr_mask_rate))
                 log_file.write(f"Loss:{min_loss}\n")
                 # enc_feat = features[target_type]
                 enc_feat, att_mp = model.encode_embedding(
@@ -349,8 +356,16 @@ def train(args):
 
                     for kmeans_random_state in range(10):
                         nmi, ari = node_clustering_evaluate(enc_feat, target_type_labels, num_classes, kmeans_random_state)
+                            
                         nmi_list.append(nmi)
                         ari_list.append(ari)
+                    nmi_mean=np.mean(nmi_list)
+                    ari_mean=np.mean(ari_list)
+                    cluster_diff=(nmi_mean-best_nmi)+ (ari_mean-best_ari)
+                    if(cluster_diff>best_cluster_diff):
+                        best_nmi=nmi_mean
+                        best_ari=ari_mean
+                        best_cluster_diff=cluster_diff
                     log_file.write(
                         "\t[clustering] nmi: [{:.4f}, {:.4f}] ari: [{:.4f}, {:.4f}]\n".format(
                             np.mean(nmi_list), np.std(nmi_list), np.mean(ari_list), np.std(ari_list)
@@ -358,7 +373,7 @@ def train(args):
                     )
 
                     ## plot t-SNE result
-                    # visualization(args.dataset, enc_feat, target_type_labels, log_times, best_epoches)
+                    #visualization(args.dataset, enc_feat, target_type_labels, log_times, best_epoches)
                 # else:
                 #     auc, mrr = lp_evaluate(f"data/CKD_data/{args.dataset}/", enc_feat)
                 #     log_file.write(f"\t AUC: {auc} MRR: {mrr}")
@@ -369,9 +384,9 @@ def train(args):
                 curr_mask += step_mask
                 curr_mask = min(curr_mask, end_mask)
                 wait_count = 0
-                # best_model_dict = None
+                best_model_dict = None
                 best_epoches = 0
-                # min_loss = 1e8
+                min_loss = 1e8
 
     ####
     ## plot the performance

@@ -163,12 +163,12 @@ class HGARME(nn.Module):
         self.encoder_to_decoder = nn.Linear(self.dec_in_dim, self.dec_in_dim, bias=False)
         self.edge_recons_encoder_to_decoder = nn.Linear(self.dec_in_dim, self.dec_in_dim, bias=False)
 
-    def forward(self, subgs, relations, epoch=None, curr_mask_rate=0.3, batch_i=0):
+    def forward(self, subgs, relations, epoch=None, curr_mask=0.3, batch_i=0):
         try:
             node_feature_recons_loss = 0.0
             adjmatrix_recons_loss = 0.0
             degree_recons_loss = 0.0
-            # curr_mask_rate = self.get_mask_rate(self.mask_rate, epoch=epoch)
+            curr_mask_rate = self.get_mask_rate(self.mask_rate, epoch=epoch)
             ## Calculate node feature reconstruction loss
             if self.feat_recons:
                 node_feature_recons_loss = self.mask_attribute_reconstruction(subgs, relations, epoch, curr_mask_rate)
@@ -177,7 +177,7 @@ class HGARME(nn.Module):
             if self.degree_recons:
                 degree_recons_loss = self.mask_edge_degree_reconstruction(subgs, relations, epoch, curr_mask_rate, batch_i)
             ## Calculate adjacent matrix reconstruction loss
-            return node_feature_recons_loss, adjmatrix_recons_loss, degree_recons_loss
+            return curr_mask_rate, node_feature_recons_loss, adjmatrix_recons_loss, degree_recons_loss
 
         except RuntimeError as e:
             # Check if the error message contains CUDA-related information
