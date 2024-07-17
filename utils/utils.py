@@ -80,3 +80,4 @@ def visualization(dataset, embs, labels, log_times, epoch):
     plt.ylabel("y t-SNE vector")
     plt.legend()
     plt.savefig(f"{dataset}({epoch})_{log_times}.png")
+    return embs_2d

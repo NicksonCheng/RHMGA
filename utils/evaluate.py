@@ -98,7 +98,7 @@ def metapath2vec_train(graph, target_type, model, epoch, device):
 
 
 def node_clustering_evaluate(embeds, y, n_labels, kmeans_random_state):
-    embeds = embeds.cpu().numpy()
+    # embeds = embeds.cpu().numpy()
     y = y.cpu().detach().numpy()
     Y_pred = KMeans(n_clusters=n_labels, random_state=kmeans_random_state, n_init=10).fit(embeds).predict(embeds)
     nmi = normalized_mutual_info_score(y, Y_pred)
@@ -128,8 +128,10 @@ def node_classification_evaluate(device, enc_feat, args, num_classes, labels, ma
     auc_score_list = []
     for _ in tqdm(range(10), position=0, desc=colorize("Evaluating", "green")):
 
-        classifier = MLP(num_dim=enc_feat.shape[-1], num_classes=num_classes).to(device)
-        # classifier = LogReg(ft_in=args.num_hidden, nb_classes=num_classes).to(device)
+        if args.classifier == "MLP":
+            classifier = MLP(num_dim=enc_feat.shape[-1], num_classes=num_classes).to(device)
+        elif args.classifier == "LR":
+            classifier = LogReg(ft_in=args.num_hidden, nb_classes=num_classes).to(device)
         optimizer = optim.Adam(classifier.parameters(), lr=args.eva_lr, weight_decay=args.eva_wd)
         test_outputs_list = []
         val_macro = []

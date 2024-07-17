@@ -216,10 +216,10 @@ def train(args):
     accu_step = 4
     # print(f"Model Allocated Memory: {torch.cuda.memory_allocated() / (1024**2):.2f} MB")
     curr_mask, step_mask, end_mask = [float(i) for i in args.dynamic_mask_rate.split(",")]
-    
-    best_ari=0.0
-    best_nmi=0.0
-    best_cluster_diff=0.0
+
+    best_ari = 0.0
+    best_nmi = 0.0
+    best_cluster_diff = 0.0
     for epoch in tqdm(range(args.epoches), total=args.epoches, desc=colorize("Epoch Training", "blue")):
         model.train()
         train_loss = 0.0
@@ -238,7 +238,7 @@ def train(args):
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad()
-            # break
+            #break
         if args.accumu_grad:
             optimizer.step()
             scheduler.step()
@@ -259,13 +259,14 @@ def train(args):
             min_loss = avg_train_loss
             best_model_dict = model.state_dict()
             best_epoches = epoch + 1
-            wait_count=0
+            wait_count = 0
         else:
             wait_count += 1
-        if wait_count > 5 or True:
+        if wait_count > 5:
             ## Evaluate Embedding Performance
             # if epoch > 0 and ((epoch + 1) % args.eva_interval) == 0:
             model.load_state_dict(best_model_dict)
+            #model.load_state_dict(torch.load(f"{args.dataset}_best_clustering.pth"))
             model.eval()
             # print(f"feat weight{feat_weight.item()} edge weight{edge_weight.item()}")
             # if True:
@@ -347,6 +348,9 @@ def train(args):
                         #     )
                         # )
                 if args.task == "clustering" or args.task == "all":
+                    ## plot t-SNE result
+                    emb_2d = visualization(args.dataset, enc_feat, target_type_labels, log_times, best_epoches)
+
                     nmi_list, ari_list = [], []
 
                     if not data.has_label_ratio:
@@ -355,25 +359,24 @@ def train(args):
                         target_type_labels = target_type_labels[labeled_indices].squeeze()
 
                     for kmeans_random_state in range(10):
-                        nmi, ari = node_clustering_evaluate(enc_feat, target_type_labels, num_classes, kmeans_random_state)
-                            
+                        nmi, ari = node_clustering_evaluate(emb_2d, target_type_labels, num_classes, kmeans_random_state)
+
                         nmi_list.append(nmi)
                         ari_list.append(ari)
-                    nmi_mean=np.mean(nmi_list)
-                    ari_mean=np.mean(ari_list)
-                    cluster_diff=(nmi_mean-best_nmi)+ (ari_mean-best_ari)
-                    if(cluster_diff>best_cluster_diff):
-                        best_nmi=nmi_mean
-                        best_ari=ari_mean
-                        best_cluster_diff=cluster_diff
+                    nmi_mean = np.mean(nmi_list)
+                    ari_mean = np.mean(ari_list)
+                    cluster_diff = (nmi_mean - best_nmi) + (ari_mean - best_ari)
+                    if cluster_diff > best_cluster_diff:
+                        best_nmi = nmi_mean
+                        best_ari = ari_mean
+                        best_cluster_diff = cluster_diff
+                        torch.save(best_model_dict, f"{args.dataset}_cluster.pth")
                     log_file.write(
                         "\t[clustering] nmi: [{:.4f}, {:.4f}] ari: [{:.4f}, {:.4f}]\n".format(
                             np.mean(nmi_list), np.std(nmi_list), np.mean(ari_list), np.std(ari_list)
                         )
                     )
 
-                    ## plot t-SNE result
-                    #visualization(args.dataset, enc_feat, target_type_labels, log_times, best_epoches)
                 # else:
                 #     auc, mrr = lp_evaluate(f"data/CKD_data/{args.dataset}/", enc_feat)
                 #     log_file.write(f"\t AUC: {auc} MRR: {mrr}")
@@ -455,7 +458,8 @@ if __name__ == "__main__":
     parser.add_argument("--task", default="classification", help="downstream task")
     parser.add_argument("--nei_sample", type=str, default="full", help="multilayer neighbor sample")
     parser.add_argument("--accumu_grad", type=bool, default=False, help="use accumulate gradient")
-    parser.add_argument("--use_feat", default="origin", help="way for original feature construction")
+    parser.add_argument("--use_feat", type=str, default="origin", help="way for original feature construction")
+    parser.add_argument("--classifier", type=str, default="MLP", help="classifier for node classification")
     known_args, unknow_args = parser.parse_known_args()
 
     cmd_args = [arg.lstrip("-") for arg in sys.argv[1:] if arg.startswith("--")]

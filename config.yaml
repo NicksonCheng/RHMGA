@@ -34,7 +34,7 @@ heco_acm:
   num_layer: 2
   num_heads: 8
   num_out_heads: 1
-  num_hidden: 1024
+  num_hidden: 512
   lr: 0.0008
   mask_rate: 0.5
   dynamic_mask_rate: 0.4,0.002,0.8
@@ -93,7 +93,7 @@ heco_aminer:
   epoches: 500
   batch_size: 512
   eva_interval: 10
-  eva_epoches: 50
+  eva_epoches: 200
   num_layer: 3
   num_heads: 8
   num_out_heads: 1
@@ -115,7 +115,7 @@ heco_aminer:
   all_feat_recons: True
   all_edge_recons: True
   mp2vec_feat: False
-  accumu_grad: True
+  accumu_grad: False
 
 
 heco_freebase:
@@ -175,7 +175,7 @@ PubMed:
   all_feat_recons: True
   all_edge_recons: True
   mp2vec_feat: False
-
+  accumu_grad: True
 Yelp:
   dataset: "Yelp"
   epoches: 500
