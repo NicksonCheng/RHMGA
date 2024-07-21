@@ -34,7 +34,7 @@ heco_acm:
   num_layer: 2
   num_heads: 8
   num_out_heads: 1
-  num_hidden: 512
+  num_hidden: 1024
   lr: 0.0008
   mask_rate: 0.5
   dynamic_mask_rate: 0.4,0.002,0.8
@@ -49,10 +49,10 @@ heco_acm:
   scheduler: True
   edge_recons: True
   feat_recons: True
-  degree_recons: True
+  degree_recons: False
   all_feat_recons: True
   all_edge_recons: True
-  all_degree_recons: True
+  all_degree_recons: False
   mp2vec_feat: False
   accumu_grad: True
 
@@ -80,10 +80,10 @@ heco_dblp:
   scheduler: True
   edge_recons: True
   feat_recons: True
-  degree_recons: True
+  degree_recons: False
   all_feat_recons: True
   all_edge_recons: True
-  all_degree_recons: True
+  all_degree_recons: False
   mp2vec_feat: False
   accumu_grad: True
 
@@ -94,7 +94,7 @@ heco_aminer:
   batch_size: 512
   eva_interval: 10
   eva_epoches: 200
-  num_layer: 3
+  num_layer: 1
   num_heads: 8
   num_out_heads: 1
   num_hidden: 512
@@ -130,7 +130,7 @@ heco_freebase:
   num_hidden: 512
   lr: 0.001
   mask_rate: 0.5
-  dynamic_mask_rate: 0.4,0.002,0.8
+  dynamic_mask_rate: 0.4,0.01,0.8
   dropout: 0.4
   encoder: "HGraphSAGE"
   decoder: "HGraphSAGE"
@@ -142,10 +142,10 @@ heco_freebase:
   scheduler: True
   edge_recons: True
   feat_recons: True
-  degree_recons: True
+  degree_recons: False
   all_feat_recons: True
   all_edge_recons: True
-  all_degree_recons: True
+  all_degree_recons: False
   mp2vec_feat: False
   accumu_grad: False
 
@@ -209,10 +209,10 @@ Freebase:
   batch_size: 512
   eva_interval: 10
   eva_epoches: 50
-  num_layer: 3
+  num_layer: 1
   num_heads: 8
   num_out_heads: 1
-  num_hidden: 128
+  num_hidden: 256
   lr: 0.001
   mask_rate: 0.5
   dropout: 0.4
@@ -224,11 +224,15 @@ Freebase:
   gamma: 3
   devices: 0
   scheduler: True
+  degree_recons: False
   edge_recons: True
   feat_recons: True
   all_feat_recons: True
   all_edge_recons: True
+  all_degree_recons: Falseß
   mp2vec_feat: False
+  use_feat: "meta2vec"
+  accumu_grad: True
 
 
 DBLP2:

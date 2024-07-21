@@ -108,7 +108,6 @@ def node_clustering_evaluate(embeds, y, n_labels, kmeans_random_state):
 
 
 def node_classification_evaluate(device, enc_feat, args, num_classes, labels, masked_graph, multilabel):
-
     train_mask = masked_graph["train"].to(dtype=torch.bool)
     val_mask = masked_graph["val"].to(dtype=torch.bool)
     test_mask = masked_graph["test"].to(dtype=torch.bool)
@@ -118,9 +117,9 @@ def node_classification_evaluate(device, enc_feat, args, num_classes, labels, ma
         "test": enc_feat[test_mask].to(device),
     }
     labels = {
-        "train": labels[train_mask].squeeze().detach(),
-        "val": labels[val_mask].squeeze().detach(),
-        "test": labels[test_mask].squeeze().detach(),
+        "train": labels[train_mask].squeeze().detach().to(device),
+        "val": labels[val_mask].squeeze().detach().to(device),
+        "test": labels[test_mask].squeeze().detach().to(device),
     }
     accs = []
     micro_f1s = []
@@ -215,7 +214,6 @@ def node_classification_evaluate(device, enc_feat, args, num_classes, labels, ma
 
 
 def LGS_node_classification_evaluate(device, enc_feat, args, num_classes, labels, masked_graph, multilabel):
-
     n_split = 10
     labeled_indices = torch.where(masked_graph["total"] > 0)[0]  ## because the mask is a tensor, so we need to use torch.where to get the indices
     ## node all nodes has labels

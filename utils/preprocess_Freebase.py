@@ -3,6 +3,7 @@ import dgl
 import torch
 import pandas as pd
 import numpy as np
+import scipy.sparse as sp
 from dgl.data import DGLDataset
 from torch_geometric.data import HeteroData
 from tqdm import tqdm
@@ -25,6 +26,7 @@ class FreebaseDataset(DGLDataset):
         force_reload=False,
         verbose=False,
     ):
+        self.use_feat = use_feat
         self.reverse_edge = reverse_edge
         self.device = torch.device(f"cuda:{device}" if torch.cuda.is_available() else "cpu")
         self.graph = HeteroData()
@@ -70,7 +72,12 @@ class FreebaseDataset(DGLDataset):
 
         curr_dir = os.path.dirname(__file__)
         parent_dir = os.path.dirname(curr_dir)
-        self.data_path = os.path.join(parent_dir, "data/CKD_data/Freebase")
+        self.data_name = "HGB"
+        if self.data_name == "HGB":
+            freebase_path = "data/HGB_data/CL/Freebase"
+        elif self.data_name == "CKD":
+            freebase_path = "data/CKD_data/Freebase"
+        self.data_path = os.path.join(parent_dir, freebase_path)
         self.g_file = "Freebase_dgl_graph.bin"
         self.create_metapaths()
         if self.reverse_edge:
@@ -121,24 +128,26 @@ class FreebaseDataset(DGLDataset):
         if self.has_cache():
             return
         chunks = []
-        for chunk in pd.read_csv(
-            os.path.join(self.data_path, "node.dat"), sep="\t", names=["node_id", "node_name", "node_type", "node_attributes"], chunksize=100000
-        ):
+        names = ["node_id", "node_name", "node_type"]
+        if self.data_name == "CKD":
+            names.append("node_attributes")
+        for chunk in pd.read_csv(os.path.join(self.data_path, "node.dat"), sep="\t", names=names, chunksize=100000):
             chunks.append(chunk)
         nodes_file = pd.concat(chunks, ignore_index=True)
         nodes = nodes_file["node_id"].tolist()
         nodes_type = nodes_file["node_type"].tolist()
-        nodes_attributes = nodes_file["node_attributes"].tolist()
+        # nodes_file["node_attributes"].tolist()
         ## mapping each node id(specific type) into new id by dictionary
-        node_dict = {ntype: {"id": [], "feat": []} for ntype in self._ntypes.values()}
-        for i, (n, t, attr) in enumerate(zip(nodes, nodes_type, nodes_attributes)):
+        node_dict = {ntype: {"id": []} for ntype in self._ntypes.values()}
+        for i, (n, t) in enumerate(zip(nodes, nodes_type)):
 
             ntype = list(self._ntypes.values())[t]
 
             node_dict[ntype]["id"].append(n)
-            feat = attr.split(",")
-            feat = [float(f) for f in feat]
-            node_dict[ntype]["feat"].append(feat)
+
+            # feat = attr.split(",")
+            # feat = [float(f) for f in feat]
+            # node_dict[ntype]["feat"].append(feat)
         # for ntype in node_dict.keys():
         #     node_dict[ntype]["feat"] = torch.tensor(node_dict[ntype]["feat"])
         ## sort node id and feature by node id
@@ -190,16 +199,21 @@ class FreebaseDataset(DGLDataset):
         return edges
 
     def _read_feats(self):
-        for ntype, metapath in self.metapaths.items():
-            wd_size = len(metapath) + 1
-            metapath_model = MetaPath2Vec(self.graph, metapath, wd_size, 512, 3, True)
-            metapath2vec_train(self.graph, ntype, metapath_model, 50, self.device)
+        if self.use_feat == "onehot":
+            for ntype in self._ntypes.values():
+                num_nodes = self.graph.num_nodes(ntype)
+                self.graph.nodes[ntype].data["feat"] = torch.from_numpy(sp.eye(num_nodes).toarray()).float()
+        elif self.use_feat == "meta2vec":
+            for ntype, metapath in self.metapaths.items():
+                wd_size = len(metapath) + 1
+                metapath_model = MetaPath2Vec(self.graph, metapath, wd_size, 512, 3, True)
+                metapath2vec_train(self.graph, ntype, metapath_model, 50, self.device)
 
-            user_nids = torch.LongTensor(metapath_model.local_to_global_nid[ntype]).to(self.device)
-            mp2vec_emb = metapath_model.node_embed(user_nids).detach().cpu()
-            self.graph.nodes[ntype].data["feat"] = mp2vec_emb
-            del metapath_model
-            torch.cuda.empty_cache()
+                user_nids = torch.LongTensor(metapath_model.local_to_global_nid[ntype]).to(self.device)
+                mp2vec_emb = metapath_model.node_embed(user_nids).detach().cpu()
+                self.graph.nodes[ntype].data["feat"] = mp2vec_emb
+                del metapath_model
+                torch.cuda.empty_cache()
 
     def _read_labels(self, node_dict):
 

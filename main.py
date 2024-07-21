@@ -113,6 +113,7 @@ def train(args):
     start_t = time.time()
     # torch.cuda.set_device()
     device_0 = torch.device(f"cuda:{args.devices}" if torch.cuda.is_available() else "cpu")
+    device_1 = torch.device(f"cuda:{args.devices ^ 1}" if torch.cuda.is_available() else "cpu")
     data = heterogeneous_dataset[args.dataset]["name"](args.reverse_edge, args.use_feat, args.devices)
     print("Preprocessing Time taken:", time.time() - start_t, "seconds")
     start_t = time.time()
@@ -122,9 +123,7 @@ def train(args):
 
     graph = data[0].to(device_0)
     all_types = list(data._ntypes.values())
-    print(all_types)
     target_type = data.predict_ntype
-
     if args.mp2vec_feat:
         ## add metapath2vec feature
         metapaths = {
@@ -238,7 +237,7 @@ def train(args):
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad()
-            #break
+            # break
         if args.accumu_grad:
             optimizer.step()
             scheduler.step()
@@ -266,7 +265,7 @@ def train(args):
             ## Evaluate Embedding Performance
             # if epoch > 0 and ((epoch + 1) % args.eva_interval) == 0:
             model.load_state_dict(best_model_dict)
-            #model.load_state_dict(torch.load(f"{args.dataset}_best_clustering.pth"))
+            # model.load_state_dict(torch.load(f"analysis/{args.dataset}/{args.dataset}_cluster.pth"))
             model.eval()
             # print(f"feat weight{feat_weight.item()} edge weight{edge_weight.item()}")
             # if True:
@@ -292,14 +291,16 @@ def train(args):
                             for split in masked_graph[ratio].keys():
                                 masked_graph[ratio][split] = masked_graph[ratio][split].detach()
                             mean, std = node_classification_evaluate(
-                                device_0, enc_feat, args, num_classes, target_type_labels.detach(), masked_graph[ratio], data.multilabel
+                                device_1, enc_feat, args, num_classes, target_type_labels, masked_graph[ratio], data.multilabel
                             )
 
                             if ratio not in performance:
-                                performance[ratio] = {"Acc": [], "Micro-F1": [], "Macro-F1": []}
+                                performance[ratio] = {"Acc": [], "Micro-F1": [], "Macro-F1": [], "Loss": [], "Epoches": []}
                             performance[ratio]["Acc"].append(mean["acc"])
                             performance[ratio]["Micro-F1"].append(mean["micro_f1"])
                             performance[ratio]["Macro-F1"].append(mean["macro_f1"])
+                            performance[ratio]["Loss"].append(min_loss)
+                            performance[ratio]["Epoches"].append(best_epoches)
                             log_file.write(
                                 "\t Label Rate:{}% Accuracy:[{:.4f}, {:.4f}] Micro-F1:[{:.4f}, {:.4f}] Macro-F1:[{:.4f}, {:.4f}]  \n".format(
                                     ratio,
@@ -315,18 +316,20 @@ def train(args):
                     else:
                         if args.dataset == "imdb":
                             mean, std = node_classification_evaluate(
-                                device_0, enc_feat, args, num_classes, target_type_labels, masked_graph, data.multilabel
+                                device_1, enc_feat, args, num_classes, target_type_labels, masked_graph, data.multilabel
                             )
                         else:
                             mean, std = LGS_node_classification_evaluate(
-                                device_0, enc_feat, args, num_classes, target_type_labels, masked_graph, data.multilabel
+                                device_1, enc_feat, args, num_classes, target_type_labels, masked_graph, data.multilabel
                             )
 
                         if not performance:
-                            performance = {"Acc": [], "Micro-F1": [], "Macro-F1": []}
-                        performance["Acc"].append(mean["auc_roc"])
-                        performance["Micro-F1"].append(mean["micro_f1"])
-                        performance["Macro-F1"].append(mean["macro_f1"])
+                            performance[ratio] = {"Acc": [], "Micro-F1": [], "Macro-F1": [], "Loss": [], "Epoches": []}
+                        performance[ratio]["Acc"].append(mean["acc"])
+                        performance[ratio]["Micro-F1"].append(mean["micro_f1"])
+                        performance[ratio]["Macro-F1"].append(mean["macro_f1"])
+                        performance[ratio]["Loss"].append(min_loss)
+                        performance[ratio]["Epoches"].append(best_epoches)
                         log_file.write(
                             "\t ACC:[{:4f},{:4f}] Micro-F1:[{:.4f}, {:.4f}] Macro-F1:[{:.4f}, {:.4f}]  \n".format(
                                 mean["auc_roc"],
@@ -349,7 +352,7 @@ def train(args):
                         # )
                 if args.task == "clustering" or args.task == "all":
                     ## plot t-SNE result
-                    emb_2d = visualization(args.dataset, enc_feat, target_type_labels, log_times, best_epoches)
+                    emb_2d = visualization(args.dataset, enc_feat, target_type_labels, log_times, best_epoches, False)
 
                     nmi_list, ari_list = [], []
 
@@ -357,7 +360,6 @@ def train(args):
                         labeled_indices = torch.where(masked_graph["total"] > 0)[0]
                         enc_feat = enc_feat[labeled_indices]
                         target_type_labels = target_type_labels[labeled_indices].squeeze()
-
                     for kmeans_random_state in range(10):
                         nmi, ari = node_clustering_evaluate(emb_2d, target_type_labels, num_classes, kmeans_random_state)
 
@@ -396,7 +398,7 @@ def train(args):
     ####
     if data.has_label_ratio:
         fig, axs = plt.subplots(1, len(data.label_ratio) + 1, figsize=(15, 5))
-        x_range = list(range(0, args.epoches + 1, args.eva_interval))[1:]
+        x_range = performance[ratio]["Epoches"]
         for i, ratio in enumerate(data.label_ratio):
             axs[i].set_title(f"Performance [Label Rate {ratio}%]")
             axs[i].plot(x_range, performance[ratio]["Acc"], label="Acc")
@@ -406,7 +408,7 @@ def train(args):
             axs[i].set_xlabel("epoch")
     else:
         fig, axs = plt.subplots(1, 2, figsize=(15, 5))
-        x_range = list(range(0, args.epoches + 1, args.eva_interval))[1:]
+        x_range = performance[ratio]["Epoches"]
         axs[0].set_title(f"Performance")
         axs[0].plot(x_range, performance["Acc"], label="Acc")
         axs[0].plot(x_range, performance["Macro-F1"], label="Macro-F1")
@@ -455,7 +457,7 @@ if __name__ == "__main__":
     parser.add_argument("--use_config", default=True, help="use best parameter in config.yaml ")
     parser.add_argument("--reverse_edge", default=True, help="add reverse edge or not")
     parser.add_argument("--mp2vec_feat", default=True, help="add reverse edge or not")
-    parser.add_argument("--task", default="classification", help="downstream task")
+    parser.add_argument("--task", default="all", help="downstream task")
     parser.add_argument("--nei_sample", type=str, default="full", help="multilayer neighbor sample")
     parser.add_argument("--accumu_grad", type=bool, default=False, help="use accumulate gradient")
     parser.add_argument("--use_feat", type=str, default="origin", help="way for original feature construction")

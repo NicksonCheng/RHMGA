@@ -62,22 +62,22 @@ def name_file(args, file, log_times):
     return file_name
 
 
-def visualization(dataset, embs, labels, log_times, epoch):
+def visualization(dataset, embs, labels, log_times, epoch, display=False):
     embs = embs.cpu().detach().numpy()
     labels = labels.cpu().detach().numpy()
     perplexity = min(30, embs.shape[0] - 1)
     tsne = TSNE(n_components=2, perplexity=perplexity, random_state=42)
     embs_2d = tsne.fit_transform(embs)
+    if display:
+        plt.figure(figsize=(12, 8))
+        colors = ["red", "blue", "green", "yellow", "purple", "orange", "black", "pink", "brown", "gray"]
+        for label in np.unique(labels):
+            indices = [i for i, lbl in enumerate(labels) if lbl == label]
+            plt.scatter(embs_2d[indices, 0], embs_2d[indices, 1], color=colors[label], label=f"Class {label}", alpha=0.6)
 
-    plt.figure(figsize=(12, 8))
-    colors = ["red", "blue", "green", "yellow", "purple", "orange", "black", "pink", "brown", "gray"]
-    for label in np.unique(labels):
-        indices = [i for i, lbl in enumerate(labels) if lbl == label]
-        plt.scatter(embs_2d[indices, 0], embs_2d[indices, 1], color=colors[label], label=f"Class {label}", alpha=0.6)
-
-    plt.title("t-SNE visualization of node embeddings with class labels")
-    plt.xlabel("x t-SNE vector")
-    plt.ylabel("y t-SNE vector")
-    plt.legend()
-    plt.savefig(f"{dataset}({epoch})_{log_times}.png")
+        plt.title("t-SNE visualization of node embeddings with class labels")
+        plt.xlabel("x t-SNE vector")
+        plt.ylabel("y t-SNE vector")
+        plt.legend()
+        plt.savefig(f"{dataset}({epoch})_{log_times}.png")
     return embs_2d

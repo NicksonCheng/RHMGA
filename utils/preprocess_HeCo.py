@@ -414,7 +414,11 @@ class AMinerHeCoDataset(HeCoDataset):
 
     @property
     def metapaths(self):
-        return [["pa", "ap"], ["pr", "rp"]]
+        return {
+            "paper": ["paper-author", "author-paper", "paper-reference", "reference-paper"],
+            "author": ["author-paper", "paper-author"],
+            "reference": ["reference-paper", "paper-reference"],
+        }
 
     @property
     def predict_ntype(self):
