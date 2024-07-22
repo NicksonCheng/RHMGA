@@ -72,7 +72,7 @@ class FreebaseDataset(DGLDataset):
 
         curr_dir = os.path.dirname(__file__)
         parent_dir = os.path.dirname(curr_dir)
-        self.data_name = "HGB"
+        self.data_name = "CKD"
         if self.data_name == "HGB":
             freebase_path = "data/HGB_data/CL/Freebase"
         elif self.data_name == "CKD":

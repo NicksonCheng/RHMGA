@@ -97,17 +97,28 @@ def metapath2vec_train(graph, target_type, model, epoch, device):
     return model
 
 
-def node_clustering_evaluate(embeds, y, n_labels, kmeans_random_state):
-    # embeds = embeds.cpu().numpy()
+def node_clustering_evaluate(embeds, y, n_labels, training_time):
+    nmi_list, ari_list = [], []
+    embeds = embeds.cpu().numpy()
     y = y.cpu().detach().numpy()
-    Y_pred = KMeans(n_clusters=n_labels, random_state=kmeans_random_state, n_init=10).fit(embeds).predict(embeds)
-    nmi = normalized_mutual_info_score(y, Y_pred)
-    ari = adjusted_rand_score(y, Y_pred)
+    for kmeans_random_state in range(training_time):
+        Y_pred = KMeans(n_clusters=n_labels, random_state=kmeans_random_state, n_init=10).fit(embeds).predict(embeds)
+        nmi = normalized_mutual_info_score(y, Y_pred)
+        ari = adjusted_rand_score(y, Y_pred)
+        nmi_list.append(nmi)
+        ari_list.append(ari)
+    mean = {
+        "nmi": np.mean(nmi_list),
+        "ari": np.mean(ari_list),
+    }
+    std = {
+        "nmi": np.std(nmi_list),
+        "ari": np.std(ari_list),
+    }
+    return mean, std
 
-    return nmi, ari
 
-
-def node_classification_evaluate(device, enc_feat, args, num_classes, labels, masked_graph, multilabel):
+def node_classification_evaluate(device, enc_feat, args, num_classes, labels, masked_graph, multilabel, training_time=10):
     train_mask = masked_graph["train"].to(dtype=torch.bool)
     val_mask = masked_graph["val"].to(dtype=torch.bool)
     test_mask = masked_graph["test"].to(dtype=torch.bool)
@@ -125,7 +136,7 @@ def node_classification_evaluate(device, enc_feat, args, num_classes, labels, ma
     micro_f1s = []
     macro_f1s = []
     auc_score_list = []
-    for _ in tqdm(range(10), position=0, desc=colorize("Evaluating", "green")):
+    for _ in tqdm(range(training_time), position=0, desc=colorize("Evaluating", "green")):
 
         if args.classifier == "MLP":
             classifier = MLP(num_dim=enc_feat.shape[-1], num_classes=num_classes).to(device)
@@ -194,13 +205,11 @@ def node_classification_evaluate(device, enc_feat, args, num_classes, labels, ma
         )
 
     mean = {
-        "acc": np.mean(accs),
         "micro_f1": np.mean(micro_f1s),
         "macro_f1": np.mean(macro_f1s),
         "auc_roc": np.mean(auc_score_list),
     }
     std = {
-        "acc": np.std(accs),
         "micro_f1": np.std(micro_f1s),
         "macro_f1": np.std(macro_f1s),
         "auc_roc": np.std(auc_score_list),

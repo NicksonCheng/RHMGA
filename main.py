@@ -30,7 +30,7 @@ from utils.preprocess_Yelp import YelpDataset
 from utils.preprocess_PubMed import PubMedDataset
 from utils.evaluate import LGS_node_classification_evaluate, node_classification_evaluate, node_clustering_evaluate, metapath2vec_train
 from utils.link_prediction import lp_evaluate
-from utils.utils import load_config, colorize, name_file, visualization
+from utils.utils import load_config, colorize, name_file, visualization, save_best_model
 from models.HGARME import HGARME
 from models.HAN import HAN
 from tqdm import tqdm
@@ -124,6 +124,7 @@ def train(args):
     graph = data[0].to(device_0)
     all_types = list(data._ntypes.values())
     target_type = data.predict_ntype
+
     if args.mp2vec_feat:
         ## add metapath2vec feature
         metapaths = {
@@ -161,6 +162,12 @@ def train(args):
             masked_graph[split] = graph.nodes[target_type].data[split]
     else:
         masked_graph["total"] = graph.nodes[target_type].data["total"]
+
+    # labeled_indices = torch.where(masked_graph["total"] > 0)[0]
+    # target_type_labels = graph.nodes[target_type].data["label"]
+    # labels_dict = target_type_labels[labeled_indices].squeeze().tolist()
+    # print(Counter(labels_dict))
+
     # print(features)
     if args.nei_sample == "full":
         sampler = MultiLayerFullNeighborSampler(args.num_layer + 1)
@@ -206,19 +213,32 @@ def train(args):
     performance = {}
     total_loss = []
     log_times = datetime.now().strftime("[%Y-%m-%d_%H:%M:%S]")
-    file_name = name_file(args, "log", log_times)
+    log_file_name = name_file(args, "log", log_times)
 
+    ## early stopping strategy
     best_model_dict = None
-    best_epoches = 0
+    best_epoche = 0
     min_loss = 1e8
     wait_count = 0
     accu_step = 4
     # print(f"Model Allocated Memory: {torch.cuda.memory_allocated() / (1024**2):.2f} MB")
     curr_mask, step_mask, end_mask = [float(i) for i in args.dynamic_mask_rate.split(",")]
 
-    best_ari = 0.0
-    best_nmi = 0.0
-    best_cluster_diff = 0.0
+    ## find best performance in model
+    if data.has_label_ratio:
+        best_nc_performance = {}
+        for ratio in data.label_ratio:
+            best_nc_performance[ratio] = {
+                "auc_roc": 0.0,
+                "micro_f1": 0.0,
+                "macro_f1": 0.0,
+            }
+        best_nc_performance["diff"] = 0.0
+        best_nc_performance["epoch"] = 0
+    else:
+        best_nc_performance = {"auc_roc": 0.0, "micro_f1": 0.0, "macro_f1": 0.0, "diff": 0.0, "epoch": 0}
+    best_cls_performance = {"ari": 0.0, "nmi": 0.0, "diff": 0.0, "epoch": 0}
+
     for epoch in tqdm(range(args.epoches), total=args.epoches, desc=colorize("Epoch Training", "blue")):
         model.train()
         train_loss = 0.0
@@ -257,23 +277,23 @@ def train(args):
         if avg_train_loss < min_loss:
             min_loss = avg_train_loss
             best_model_dict = model.state_dict()
-            best_epoches = epoch + 1
+            best_epoche = epoch + 1
             wait_count = 0
         else:
             wait_count += 1
-        if wait_count > 5:
-            ## Evaluate Embedding Performance
-            # if epoch > 0 and ((epoch + 1) % args.eva_interval) == 0:
+        # if wait_count > 5:
+        ## Evaluate Embedding Performance
+        if epoch > 0 and ((epoch + 1) % args.eva_interval) == 0:
             model.load_state_dict(best_model_dict)
-            # model.load_state_dict(torch.load(f"analysis/{args.dataset}/{args.dataset}_cluster.pth"))
-            model.eval()
+            # model.load_state_dict(torch.load(f"{args.dataset}_cluster.pth"))
+            # model.eval()
             # print(f"feat weight{feat_weight.item()} edge weight{edge_weight.item()}")
             # if True:
-            file_name = name_file(args, "log", log_times)
-            with open(file_name, "a") as log_file:
-                if os.path.getsize(file_name) == 0:
+            log_file_name = name_file(args, "log", log_times)
+            with open(log_file_name, "a") as log_file:
+                if os.path.getsize(log_file_name) == 0:
                     log_file.write(f"{args}\n")
-                log_file.write(f"Best Epoches:{best_epoches}-----------------------------------\n")
+                log_file.write(f"Best Epoches:{best_epoche}-----------------------------------\n")
                 log_file.write("Current Mask Rate:{}\n".format(curr_mask_rate))
                 log_file.write(f"Loss:{min_loss}\n")
                 # enc_feat = features[target_type]
@@ -287,6 +307,7 @@ def train(args):
                 target_type_labels = graph.nodes[target_type].data["label"]
                 if args.task == "classification" or args.task == "all":
                     if data.has_label_ratio:
+                        ratio_mean = {}
                         for ratio in data.label_ratio:
                             for split in masked_graph[ratio].keys():
                                 masked_graph[ratio][split] = masked_graph[ratio][split].detach()
@@ -295,12 +316,14 @@ def train(args):
                             )
 
                             if ratio not in performance:
-                                performance[ratio] = {"Acc": [], "Micro-F1": [], "Macro-F1": [], "Loss": [], "Epoches": []}
-                            performance[ratio]["Acc"].append(mean["acc"])
+                                performance[ratio] = {"auc_roc": [], "Micro-F1": [], "Macro-F1": [], "Loss": [], "Epoches": []}
+                            ratio_mean[ratio] = mean
+                            performance[ratio]["auc_roc"].append(mean["auc_roc"])
                             performance[ratio]["Micro-F1"].append(mean["micro_f1"])
                             performance[ratio]["Macro-F1"].append(mean["macro_f1"])
                             performance[ratio]["Loss"].append(min_loss)
-                            performance[ratio]["Epoches"].append(best_epoches)
+                            performance[ratio]["Epoches"].append(best_epoche)
+
                             log_file.write(
                                 "\t Label Rate:{}% Accuracy:[{:.4f}, {:.4f}] Micro-F1:[{:.4f}, {:.4f}] Macro-F1:[{:.4f}, {:.4f}]  \n".format(
                                     ratio,
@@ -312,7 +335,7 @@ def train(args):
                                     std["macro_f1"],
                                 )
                             )
-
+                        save_best_model(model, best_nc_performance, ratio_mean, "classification", args.dataset, best_epoche, log_times, True)
                     else:
                         if args.dataset == "imdb":
                             mean, std = node_classification_evaluate(
@@ -324,12 +347,12 @@ def train(args):
                             )
 
                         if not performance:
-                            performance[ratio] = {"Acc": [], "Micro-F1": [], "Macro-F1": [], "Loss": [], "Epoches": []}
-                        performance[ratio]["Acc"].append(mean["acc"])
+                            performance[ratio] = {"auc_roc": [], "Micro-F1": [], "Macro-F1": [], "Loss": [], "Epoches": []}
+                        performance[ratio]["auc_roc"].append(mean["auc_roc"])
                         performance[ratio]["Micro-F1"].append(mean["micro_f1"])
                         performance[ratio]["Macro-F1"].append(mean["macro_f1"])
                         performance[ratio]["Loss"].append(min_loss)
-                        performance[ratio]["Epoches"].append(best_epoches)
+                        performance[ratio]["Epoches"].append(best_epoche)
                         log_file.write(
                             "\t ACC:[{:4f},{:4f}] Micro-F1:[{:.4f}, {:.4f}] Macro-F1:[{:.4f}, {:.4f}]  \n".format(
                                 mean["auc_roc"],
@@ -352,30 +375,20 @@ def train(args):
                         # )
                 if args.task == "clustering" or args.task == "all":
                     ## plot t-SNE result
-                    emb_2d = visualization(args.dataset, enc_feat, target_type_labels, log_times, best_epoches, False)
-
-                    nmi_list, ari_list = [], []
+                    # emb_2d = visualization(args.dataset, enc_feat, target_type_labels, log_times, best_epoche, True)
 
                     if not data.has_label_ratio:
                         labeled_indices = torch.where(masked_graph["total"] > 0)[0]
                         enc_feat = enc_feat[labeled_indices]
                         target_type_labels = target_type_labels[labeled_indices].squeeze()
-                    for kmeans_random_state in range(10):
-                        nmi, ari = node_clustering_evaluate(emb_2d, target_type_labels, num_classes, kmeans_random_state)
-
-                        nmi_list.append(nmi)
-                        ari_list.append(ari)
-                    nmi_mean = np.mean(nmi_list)
-                    ari_mean = np.mean(ari_list)
-                    cluster_diff = (nmi_mean - best_nmi) + (ari_mean - best_ari)
-                    if cluster_diff > best_cluster_diff:
-                        best_nmi = nmi_mean
-                        best_ari = ari_mean
-                        best_cluster_diff = cluster_diff
-                        torch.save(best_model_dict, f"{args.dataset}_cluster.pth")
+                    mean, std = node_clustering_evaluate(enc_feat, target_type_labels, num_classes, 10)
+                    save_best_model(model, best_cls_performance, mean, "clustering", args.dataset, best_epoche, log_times)
                     log_file.write(
                         "\t[clustering] nmi: [{:.4f}, {:.4f}] ari: [{:.4f}, {:.4f}]\n".format(
-                            np.mean(nmi_list), np.std(nmi_list), np.mean(ari_list), np.std(ari_list)
+                            mean["nmi"],
+                            std["nmi"],
+                            mean["ari"],
+                            std["ari"],
                         )
                     )
 
@@ -385,13 +398,13 @@ def train(args):
                 # elif args.task == "link_prediction":
                 #     auc, mrr = lp_evaluate(data.test_file, enc_feat)
                 #     log_file.write(f"\t AUC: {auc} MRR: {mrr}")
-
                 curr_mask += step_mask
                 curr_mask = min(curr_mask, end_mask)
                 wait_count = 0
                 best_model_dict = None
-                best_epoches = 0
+                best_epoche = 0
                 min_loss = 1e8
+                log_file.close()
 
     ####
     ## plot the performance
@@ -401,7 +414,7 @@ def train(args):
         x_range = performance[ratio]["Epoches"]
         for i, ratio in enumerate(data.label_ratio):
             axs[i].set_title(f"Performance [Label Rate {ratio}%]")
-            axs[i].plot(x_range, performance[ratio]["Acc"], label="Acc")
+            axs[i].plot(x_range, performance[ratio]["auc_roc"], label="auc_roc")
             axs[i].plot(x_range, performance[ratio]["Macro-F1"], label="Macro-F1")
             axs[i].plot(x_range, performance[ratio]["Micro-F1"], label="Micro-F1")
             axs[i].legend()
@@ -410,7 +423,7 @@ def train(args):
         fig, axs = plt.subplots(1, 2, figsize=(15, 5))
         x_range = performance[ratio]["Epoches"]
         axs[0].set_title(f"Performance")
-        axs[0].plot(x_range, performance["Acc"], label="Acc")
+        axs[0].plot(x_range, performance["auc_roc"], label="auc_roc")
         axs[0].plot(x_range, performance["Macro-F1"], label="Macro-F1")
         axs[0].plot(x_range, performance["Micro-F1"], label="Micro-F1")
         axs[0].legend()
@@ -421,8 +434,29 @@ def train(args):
     axs[-1].legend()
     axs[-1].set_xlabel("epoch")
     formatted_now = datetime.now().strftime("[%Y-%m-%d_%H:%M:%S]")
-    file_name = name_file(args, "img", formatted_now)
-    fig.savefig(file_name)
+    img_file_name = name_file(args, "img", formatted_now)
+    fig.savefig(img_file_name)
+
+    with open(log_file_name, "a") as log_file:
+        log_file.write("====================================================================\n")
+        log_file.write("\t Best Classification Epoches {}: \n".format(best_nc_performance["epoch"]))
+        for ratio in data.label_ratio:
+            log_file.write(
+                "\t Label Rate:{}% Accuracy:[{:.4f}] Micro-F1:[{:.4f}] Macro-F1:[{:.4f}]  \n".format(
+                    ratio,
+                    best_nc_performance[ratio]["auc_roc"],
+                    best_nc_performance[ratio]["micro_f1"],
+                    best_nc_performance[ratio]["macro_f1"],
+                )
+            )
+        log_file.write("\n\n\t Best CLustering Epoches {}: \n".format(best_cls_performance["epoch"]))
+        log_file.write(
+            "\t[clustering] nmi: [{:.4f}] ari: [{:.4f}]\n".format(
+                best_cls_performance["nmi"],
+                best_cls_performance["ari"],
+            )
+        )
+        log_file.close()
 
 
 if __name__ == "__main__":
