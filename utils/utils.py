@@ -86,23 +86,24 @@ def visualization(dataset, embs, labels, log_times, epoch, display=False):
 
 
 def save_best_model(model, best_performance, metrics_mean, task, dataset, best_epoch, log_time, has_ratio=False):
-    diff = 0.0
+    total=0.0
     if has_ratio:
         for ratio in metrics_mean.keys():
             for metric, value in metrics_mean[ratio].items():
-                diff += value - best_performance[ratio][metric]
-        if diff > best_performance["diff"]:
-            best_performance["diff"] = diff
+                total += value
+
+        if total > best_performance["total"]:
+            best_performance["total"] = total
             best_performance["epoch"] = best_epoch
             for ratio in metrics_mean.keys():
                 for metric, value in metrics_mean[ratio].items():
                     best_performance[ratio][metric] = value
-            torch.save(model.state_dict(), f"analysis/{dataset}/best_{task}_{log_time}.pt")
+            torch.save(model.state_dict(), f"analysis/{dataset}/best_{task}_{log_time}.pth")
     else:
         for metric, value in metrics_mean.items():
-            diff += value - best_performance[metric]
-        if diff > best_performance["diff"]:
-            best_performance["diff"] = diff
+            total += value
+        if total > best_performance["total"]:
+            best_performance["total"] = total
             best_performance["epoch"] = best_epoch
             for metric, value in metrics_mean.items():
                 best_performance[metric] = value

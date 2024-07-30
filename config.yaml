@@ -176,6 +176,7 @@ PubMed:
   all_edge_recons: True
   mp2vec_feat: False
   accumu_grad: True
+  task: "classification"
 Yelp:
   dataset: "Yelp"
   epoches: 500
@@ -202,7 +203,7 @@ Yelp:
   all_feat_recons: True
   all_edge_recons: True
   mp2vec_feat: True
-
+  task: "classification"
 Freebase:
   dataset: "Freebase"
   epoches: 500
@@ -233,7 +234,7 @@ Freebase:
   mp2vec_feat: False
   use_feat: "meta2vec"
   accumu_grad: True
-
+  task: "classification"
 
 DBLP2:
   dataset: "DBLP2"

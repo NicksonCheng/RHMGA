@@ -15,3 +15,10 @@ def cosine_similarity(x, y, gamma):
 
     cos_sim = (1 - (x * y).sum(dim=-1)).pow_(gamma).mean()
     return cos_sim
+
+
+def cross_entropy_loss(pos_out, neg_out):
+    pos_loss = F.binary_cross_entropy(pos_out.sigmoid(), torch.ones_like(pos_out))
+    # neg_loss = F.binary_cross_entropy(neg_out.sigmoid(), torch.zeros_like(neg_out))
+    return pos_loss
+    return pos_loss + neg_loss
