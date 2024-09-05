@@ -262,3 +262,36 @@ DBLP2:
   all_feat_recons: True
   all_edge_recons: True
   mp2vec_feat: False
+
+
+HGB_Freebase:
+  dataset: "HGB_Freebase"
+  epoches: 500
+  batch_size: 1024
+  eva_interval: 10
+  eva_epoches: 200
+  num_layer: 1
+  num_heads: 8
+  num_out_heads: 1
+  num_hidden: 512
+  lr: 0.001
+  mask_rate: 0.5
+  dynamic_mask_rate: 0.4,0.01,0.8
+  dropout: 0.4
+  encoder: "HGraphSAGE"
+  decoder: "HGraphSAGE"
+  weight_decay: 0.0001
+  eva_lr: 0.01
+  eva_wd: 0.0001
+  gamma: 3
+  devices: 0
+  scheduler: True
+  edge_recons: True
+  feat_recons: True
+  degree_recons: False
+  all_feat_recons: True
+  all_edge_recons: True
+  all_degree_recons: False
+  mp2vec_feat: False
+  accumu_grad: False
+  use_feat: "onehot"

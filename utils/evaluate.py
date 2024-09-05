@@ -228,7 +228,6 @@ def LGS_node_classification_evaluate(device, enc_feat, args, num_classes, labels
     ## node all nodes has labels
     labels_dict = labels[labeled_indices].squeeze().detach().cpu()
     enc_feat_dict = enc_feat[labeled_indices].detach().cpu()
-
     seed = np.random.seed(1)
     skf = StratifiedKFold(n_splits=n_split, shuffle=True, random_state=seed)
     accs = []

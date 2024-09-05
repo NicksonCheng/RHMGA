@@ -64,6 +64,7 @@ def module_selection(
     module_type: str,
     weight_T: nn.ModuleDict,
     status: str,
+    aggregator: str,
 ):
     if module_type == "HAN":
         return HAN(
@@ -74,18 +75,6 @@ def module_selection(
             num_heads=num_heads,
             num_out_heads=num_out_heads,
             dropout=dropout,
-        )
-    elif module_type == "SRN":
-        return Schema_Relation_Network(
-            relations=relations,
-            hidden_dim=hidden_dim,
-            ntype_out_dim=out_dim,
-            num_layer=num_layer,
-            num_heads=num_heads,
-            num_out_heads=num_out_heads,
-            dropout=dropout,
-            weight_T=weight_T,
-            status=status,
         )
     elif module_type == "HGraphSAGE":
         return HGraphSAGE(
@@ -99,14 +88,16 @@ def module_selection(
             dropout=dropout,
             weight_T=weight_T,
             status=status,
+            aggregator=aggregator,
         )
 
 
 class HGARME(nn.Module):
-    def __init__(self, relations, target_type, all_types, target_in_dim, ntype_in_dim, args):
+    def __init__(self, relations, target_type, all_types, target_in_dim, ntype_in_dim, ntype_out_dim, args):
         super(HGARME, self).__init__()
         self.target_in_dim = target_in_dim
         self.ntype_in_dim = ntype_in_dim
+        self.ntype_out_dim = ntype_out_dim
         self.target_type = target_type
         self.all_types = all_types
         # self.mask_rate = args.mask_rate
@@ -125,6 +116,7 @@ class HGARME(nn.Module):
         self.all_feat_recons = args.all_feat_recons
         self.all_edge_recons = args.all_edge_recons
         self.all_degree_recons = args.all_degree_recons
+        self.aggregator = args.aggregator
         # encoder/decoder hidden dimension
         if self.encoder_type == "HGraphSAGE":
             self.enc_dim = self.hidden_dim // self.num_heads
@@ -154,6 +146,7 @@ class HGARME(nn.Module):
             module_type=self.encoder_type,
             weight_T=self.weight_T,
             status="encoder",
+            aggregator=self.aggregator,
         )
         # linear transformation from encoder to decoder
         self.initial_status_dim(relations=relations)
@@ -161,7 +154,7 @@ class HGARME(nn.Module):
             relations=relations,
             in_dim=self.dec_in_dim,
             hidden_dim=self.dec_hidden_dim,
-            out_dim=self.ntype_in_dim,
+            out_dim=self.ntype_out_dim,
             num_heads=self.enc_heads,
             num_out_heads=self.dec_heads,
             num_layer=self.num_layer,
@@ -169,6 +162,7 @@ class HGARME(nn.Module):
             module_type=self.decoder_type,
             weight_T=self.weight_T,
             status="decoder",
+            aggregator=self.aggregator,
         )
         self.edge_decoder = MaskEdgeDecoder(self.dec_in_dim, 1)
         self.degree_decoder = DegreeDecoder(self.dec_in_dim, len(all_types))
@@ -368,7 +362,7 @@ class HGARME(nn.Module):
             # meta_adj_recons_loss = self.bce_loss(self.sigmoid(meta_recons_adj_tensor), meta_origin_adj_tensor)
             meta_adj_recons_loss = self.criterion(meta_origin_adj_tensor, meta_recons_adj_tensor)
             all_adjmatrix_recons_loss += meta_adj_recons_loss
-            num_loss+=1
+            num_loss += 1
         avg_adj_recons_loss = all_adjmatrix_recons_loss / num_loss
 
         return avg_adj_recons_loss
@@ -412,6 +406,8 @@ class HGARME(nn.Module):
 
         ## if node exist sample zero node, we don't use it(small batch size problem)
         ntype_dst_x = {ntype: feat for ntype, feat in subgs[-1].dstdata["feat"].items() if feat.shape[0] > 0}
+
+        ntype_origin_x = {ntype: feat for ntype, feat in subgs[-1].dstdata["feat"].items() if feat.shape[0] > 0}
         ##
 
         ## only target node feature reconstruction
@@ -442,7 +438,6 @@ class HGARME(nn.Module):
             use_x = self.weight_T[use_ntype](use_x)
             src_x = [{ntype: self.weight_T[ntype](x) for ntype, x in s_x.items()} for s_x in src_x]
             enc_rep, att_sc = self.encoder(subgs, 1, relations, use_ntype, use_x, src_x, "encoder")
-
             # remask
             hidden_rep = self.encoder_to_decoder(enc_rep)
             hidden_rep[mask_nodes] = 0.0
@@ -452,10 +447,11 @@ class HGARME(nn.Module):
             elif self.decoder_type == "MLP":
                 dec_rep = self.decoder(hidden_rep)
             ## calculate all type nodes feature reconstruction
+
             if mask_nodes.shape[0] == 0:
-                ntype_loss = self.criterion(ntype_dst_x[use_ntype], dec_rep)
+                ntype_loss = self.criterion(ntype_origin_x[use_ntype], dec_rep)
             else:
-                ntype_loss = self.criterion(ntype_dst_x[use_ntype][mask_nodes], dec_rep[mask_nodes])
+                ntype_loss = self.criterion(ntype_origin_x[use_ntype][mask_nodes], dec_rep[mask_nodes])
 
             if math.isnan(ntype_loss):
                 num_nodes = ntype_dst_x[use_ntype].shape[0]
@@ -470,8 +466,8 @@ class HGARME(nn.Module):
         avg_feat_recons_loss = all_node_feature_recons_loss / len(ntype_use_dst_x)
         return avg_feat_recons_loss
 
-    def encode_embedding(self, graph, relations, target_type, status,device):
-        graph=graph.to(device)
+    def encode_embedding(self, graph, relations, target_type, status, device):
+        graph = graph.to(device)
         features = {ntype: self.weight_T[ntype](feats) for ntype, feats in graph.ndata["feat"].items()}
         enc_feat, att_sc = self.encoder(
             subgs=[graph],

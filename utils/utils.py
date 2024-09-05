@@ -85,8 +85,8 @@ def visualization(dataset, embs, labels, log_times, epoch, display=False):
     return embs_2d
 
 
-def save_best_model(model, best_performance, metrics_mean, task, dataset, best_epoch, log_time, has_ratio=False):
-    total=0.0
+def save_best_performance(model, best_performance, metrics_mean, task, dataset, best_epoch, log_time, save_model, has_ratio=False):
+    total = 0.0
     if has_ratio:
         for ratio in metrics_mean.keys():
             for metric, value in metrics_mean[ratio].items():
@@ -98,7 +98,8 @@ def save_best_model(model, best_performance, metrics_mean, task, dataset, best_e
             for ratio in metrics_mean.keys():
                 for metric, value in metrics_mean[ratio].items():
                     best_performance[ratio][metric] = value
-            torch.save(model.state_dict(), f"analysis/{dataset}/best_{task}_{log_time}.pth")
+            if save_model:
+                torch.save(model.state_dict(), f"analysis/{dataset}/best_{task}_{log_time}.pth")
     else:
         for metric, value in metrics_mean.items():
             total += value
@@ -107,4 +108,5 @@ def save_best_model(model, best_performance, metrics_mean, task, dataset, best_e
             best_performance["epoch"] = best_epoch
             for metric, value in metrics_mean.items():
                 best_performance[metric] = value
-            torch.save(model.state_dict(), f"analysis/{dataset}/best_{task}_{log_time}.pth")
+            if save_model:
+                torch.save(model.state_dict(), f"analysis/{dataset}/best_{task}_{log_time}.pth")

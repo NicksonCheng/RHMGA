@@ -41,7 +41,7 @@ class PubMedDataset(DGLDataset):
         ]
         curr_dir = os.path.dirname(__file__)
         parent_dir = os.path.dirname(curr_dir)
-        self.data_path = os.path.join(parent_dir, "data/CKD_data/PubMed")
+        self.data_path = os.path.join(parent_dir, "../data/CKD_data/PubMed")
         self.add_reverse_relation()
         super(PubMedDataset, self).__init__(
             name="pubmed",

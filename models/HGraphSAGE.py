@@ -73,6 +73,7 @@ class SemanticAttention(nn.Module):
         att_sc = a_w.mean(0).squeeze()
         return z, att_sc
 
+
 # class CrossAttention(nn.Module):
 #     def __init__(self, ):
 class Schema_Relation_Network(nn.Module):
@@ -84,13 +85,14 @@ class Schema_Relation_Network(nn.Module):
         weight_T: nn.ModuleDict,
         num_heads: int,
         status: str,
+        aggregator: str,
     ):
         super(Schema_Relation_Network, self).__init__()
         self.in_dim = in_dim
         self.out_dim = out_dim
         self.weight_T = weight_T
         self.num_heads = num_heads
-
+        self.aggregator = aggregator
         ## project all type of node into same dimension
         self.gats = nn.ModuleDict(
             {
@@ -142,17 +144,20 @@ class Schema_Relation_Network(nn.Module):
 
         ## semantic aggregation with all relation-based embedding
         ## prevent only one dst node or only one relation
-        try:
-            z_r_key = list(z_r.keys())
-            z_r = torch.stack(list(z_r.values()), dim=1)
+        z_r_key = list(z_r.keys())
+        z_r = torch.stack(list(z_r.values()), dim=1)
+        z, att_sc = None, None
+        if self.aggregator == "mean":
+            att_sc = torch.ones(z_r.shape[1])
+            z = z_r.mean(dim=1)
+
+        elif self.aggregator == "attention":
             z, att_sc = self.semantic_attention(z_r)
-            if att_sc.dim() == 0:
-                rel_att_sc = {z_r_key[0]: att_sc}
-            else:
-                rel_att_sc = {key: att_sc[i] for i, key in enumerate(z_r_key)}
-            return z, rel_att_sc
-        except IndexError as e:
-            print(e)
+        if att_sc.dim() == 0:
+            rel_att_sc = {z_r_key[0]: att_sc}
+        else:
+            rel_att_sc = {key: att_sc[i] for i, key in enumerate(z_r_key)}
+        return z, rel_att_sc
 
 
 class HGraphSAGE(nn.Module):
@@ -168,6 +173,7 @@ class HGraphSAGE(nn.Module):
         dropout: float,
         weight_T: nn.ModuleDict,
         status: str,
+        aggregator: str,
     ):
         super(HGraphSAGE, self).__init__()
         self.in_dim = in_dim
@@ -176,20 +182,23 @@ class HGraphSAGE(nn.Module):
         self.num_layer = num_layer
         self.weight_T = weight_T
         self.layers = nn.ModuleList()
-
         ## because this is HGraphSAGE, the head,dimension problem should be reverse compared to tradictional multilayer GAT
         if num_layer == 1:
-            self.layers.append(Schema_Relation_Network(relations, self.in_dim, self.hidden_dim, weight_T, num_out_heads, status))
+            self.layers.append(Schema_Relation_Network(relations, self.in_dim, self.hidden_dim, weight_T, num_out_heads, status, aggregator))
         else:
-            self.layers.append(Schema_Relation_Network(relations, self.hidden_dim * num_heads, self.hidden_dim, weight_T, num_out_heads, status))
+            self.layers.append(
+                Schema_Relation_Network(relations, self.hidden_dim * num_heads, self.hidden_dim, weight_T, num_out_heads, status, aggregator)
+            )
             for i in range(1, num_layer - 1):
-                self.layers.append(Schema_Relation_Network(relations, self.hidden_dim * num_heads, self.hidden_dim, weight_T, num_heads, status))
-            self.layers.append(Schema_Relation_Network(relations, self.in_dim, self.hidden_dim, weight_T, num_heads, status))
+                self.layers.append(
+                    Schema_Relation_Network(relations, self.hidden_dim * num_heads, self.hidden_dim, weight_T, num_heads, status, aggregator)
+                )
+            self.layers.append(Schema_Relation_Network(relations, self.in_dim, self.hidden_dim, weight_T, num_heads, status, aggregator))
 
         ## this is for src_feat encoder
         if status == "encoder":
             extra_in_dim = self.in_dim if num_layer == 1 else self.hidden_dim * num_heads
-            self.layers.append(Schema_Relation_Network(relations, extra_in_dim, self.hidden_dim, weight_T, num_heads, status))
+            self.layers.append(Schema_Relation_Network(relations, extra_in_dim, self.hidden_dim, weight_T, num_heads, status, aggregator))
 
         ## out_dim has different type of nodes
         if status == "decoder":
