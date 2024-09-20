@@ -90,6 +90,7 @@ class Schema_Relation_Network(nn.Module):
         super(Schema_Relation_Network, self).__init__()
         self.in_dim = in_dim
         self.out_dim = out_dim
+        self.relations = relations
         self.weight_T = weight_T
         self.num_heads = num_heads
         self.aggregator = aggregator
@@ -112,6 +113,19 @@ class Schema_Relation_Network(nn.Module):
         )
 
         self.semantic_attention = SemanticAttention(in_dim=out_dim * num_heads)
+        self.add_concate_proj_layers()
+
+    def add_concate_proj_layers(self):
+        ntype_cnt = {}
+        for rel_tuple in self.relations:
+            src, rel, dst = rel_tuple
+            if dst not in ntype_cnt:
+                ntype_cnt[dst] = 1
+            else:
+                ntype_cnt[dst] += 1
+        self.concate_trans = nn.ModuleDict(
+            {ntype: nn.Linear(self.out_dim * self.num_heads * cnt, self.out_dim * self.num_heads) for ntype, cnt in ntype_cnt.items()}
+        )
 
     def forward(
         self,
@@ -153,6 +167,10 @@ class Schema_Relation_Network(nn.Module):
 
         elif self.aggregator == "attention":
             z, att_sc = self.semantic_attention(z_r)
+        elif self.aggregator == "concatenate":
+            att_sc = torch.ones(z_r.shape[1])
+            z = z_r.view(z_r.shape[0], -1)
+            z = self.concate_trans[dst_ntype](z)
         if att_sc.dim() == 0:
             rel_att_sc = {z_r_key[0]: att_sc}
         else:
@@ -266,7 +284,6 @@ class HGraphSAGE(nn.Module):
 
         att_sc = None
         edge_masked = True if status == "edge_recons_encoder" and curr_layer == 1 else False
-
         if status == "evaluation":
             curr_subg = subgs[0]
             src_ntype_feats = subgs_src_ntype_feats[0]

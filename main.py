@@ -145,9 +145,9 @@ def train(rank=None, world_size=None, args=None):
     num_classes = data.num_classes
     train_nids = {ntype: torch.arange(graph.num_nodes(ntype)) for ntype in all_types}
 
-    # for ntype, feat in graph.ndata["feat"].items():
-    #     num_nodes = graph.num_nodes(ntype)
-    #     graph.nodes[ntype].data["onehot_feat"] = torch.from_numpy(sp.eye(num_nodes).toarray()).float()
+    for ntype, feat in graph.ndata["feat"].items():
+        num_nodes = graph.num_nodes(ntype)
+        graph.nodes[ntype].data["onehot_feat"] = torch.from_numpy(sp.eye(num_nodes).toarray()).float()
     masked_graph = {}
     if data.has_label_ratio:
         for ratio in data.label_ratio:
@@ -181,7 +181,7 @@ def train(rank=None, world_size=None, args=None):
         target_type=target_type,
         all_types=all_types,
         target_in_dim=graph.ndata["feat"][target_type].shape[1],
-        ntype_in_dim={ntype: feat.shape[1] for ntype, feat in graph.ndata["feat"].items()},
+        ntype_in_dim={ntype: feat.shape[1] for ntype, feat in graph.ndata["onehot_feat"].items()},
         ntype_out_dim={ntype: feat.shape[1] for ntype, feat in graph.ndata["feat"].items()},
         args=args,
     )
@@ -244,9 +244,7 @@ def train(rank=None, world_size=None, args=None):
                 subgs = [sg.to(device_0) for sg in subgs]
             curr_mask_rate, feat_loss, adj_loss, degree_loss = model(subgs, relations, epoch, i)
             # print(feat_loss, adj_loss, degree_loss * 0.01)
-            alpha = 0.003
-            # loss = alpha * degree_loss + (1 - alpha) * (adj_loss)
-            loss = feat_loss + adj_loss
+            loss = args.loss_alpha * feat_loss + adj_loss
             # print(loss)
             train_loss += loss.item()
             loss.backward()
@@ -280,7 +278,7 @@ def train(rank=None, world_size=None, args=None):
 
             ## Evaluate Embedding Performance
             if wait_count > 5:
-            #if epoch > 0 and ((epoch + 1) % args.eva_interval) == 0:
+                # if epoch > 0 and ((epoch + 1) % args.eva_interval) == 0:
                 model.load_state_dict(best_model_dict)
                 model.eval()
                 log_file_name = name_file(args, "log", log_times)
@@ -393,7 +391,9 @@ def train(rank=None, world_size=None, args=None):
                             labeled_indices = torch.where(masked_graph["total"] > 0)[0]
                             enc_feat = enc_feat[labeled_indices]
                             target_type_labels = target_type_labels[labeled_indices].squeeze()
-                        mean, std = node_clustering_evaluate(enc_feat, target_type_labels, num_classes, 10)
+                        cls_enc_emb = enc_feat if args.dataset != "aminer" else emb_2d
+                        mean, std = node_clustering_evaluate(cls_enc_emb, target_type_labels, num_classes, 10)
+
                         save_best_performance(model, best_cls_performance, mean, "clustering", args.dataset, best_epoch, log_times, args.save_model)
                         log_file.write(
                             "\t[clustering] nmi: [{:.4f}, {:.4f}] ari: [{:.4f}, {:.4f}]\n".format(
@@ -513,7 +513,9 @@ if __name__ == "__main__":
     parser.add_argument("--nei_sample", type=str, default="full", help="multilayer neighbor sample")
     parser.add_argument("--use_feat", type=str, default="origin", help="way for original feature construction")
     parser.add_argument("--aggregator", type=str, default="attention", help="way for semantic aggregation")
-
+    parser.add_argument("--loss_alpha", type=float, default=1.0, help="feature reconstruction loss alpha weight")
+    parser.add_argument("--edge_mask", default=True, help="mask edge or not")
+    parser.add_argument("--feat_mask", default=True, help="mask node feature or not")
     ## event controller
     parser.add_argument("--classifier", type=str, default="MLP", help="classifier for node classification")
     parser.add_argument("--task", type=str, default="all", help="downstream task")
@@ -521,7 +523,7 @@ if __name__ == "__main__":
     parser.add_argument("--save_model", default=False, help="save best model or not")
     parser.add_argument("--trend_graph", default=False, help="performance trend graph")
     parser.add_argument("--parallel", default=False, help="whether to user distribute parallel or not")
-
+    parser.add_argument("--save_folder", type=str, default="", help="downstream task")
     known_args, unknow_args = parser.parse_known_args()
 
     cmd_args = [arg.lstrip("-") for arg in sys.argv[1:] if arg.startswith("--")]

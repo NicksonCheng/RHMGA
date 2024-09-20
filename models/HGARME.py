@@ -117,6 +117,9 @@ class HGARME(nn.Module):
         self.all_edge_recons = args.all_edge_recons
         self.all_degree_recons = args.all_degree_recons
         self.aggregator = args.aggregator
+        self.feat_mask = args.feat_mask
+        self.edge_mask = args.edge_mask
+
         # encoder/decoder hidden dimension
         if self.encoder_type == "HGraphSAGE":
             self.enc_dim = self.hidden_dim // self.num_heads
@@ -132,7 +135,8 @@ class HGARME(nn.Module):
         self.dec_heads = self.num_out_heads
 
         ## project all type of node into same dimension
-        self.weight_T = nn.ModuleDict({t: nn.Linear(self.ntype_in_dim[t], self.hidden_dim) for t in self.all_types})
+        self.weight_T = nn.ModuleDict({t: nn.Linear(self.ntype_out_dim[t], self.hidden_dim) for t in self.all_types})
+        self.weight_T2 = nn.ModuleDict({t: nn.Linear(self.ntype_in_dim[t], self.hidden_dim) for t in self.all_types})
         self.ntype_enc_mask_token = {t: nn.Parameter(torch.zeros(1, self.ntype_in_dim[t])) for t in self.all_types}
         self.encoder = module_selection(
             relations=relations,
@@ -181,11 +185,13 @@ class HGARME(nn.Module):
             adjmatrix_recons_loss = 0.0
             degree_recons_loss = 0.0
             curr_mask_rate = self.get_mask_rate(self.mask_rate, epoch=epoch)
+            edge_mask_rate = curr_mask_rate if self.edge_mask else 0.0
+            feat_mask_rate = curr_mask_rate if self.feat_mask else 0.0
             ## Calculate node feature reconstruction loss
             if self.feat_recons:
-                node_feature_recons_loss = self.mask_attribute_reconstruction(subgs, relations, epoch, curr_mask_rate)
+                node_feature_recons_loss = self.mask_attribute_reconstruction(subgs, relations, epoch, feat_mask_rate)
             if self.edge_recons:
-                adjmatrix_recons_loss = self.mask_edge_reconstruction(subgs, relations, epoch, curr_mask_rate, batch_i)
+                adjmatrix_recons_loss = self.mask_edge_reconstruction(subgs, relations, epoch, edge_mask_rate, batch_i)
             if self.degree_recons:
                 degree_recons_loss = self.mask_edge_degree_reconstruction(subgs, relations, epoch, curr_mask_rate, batch_i)
             ## Calculate adjacent matrix reconstruction loss
@@ -294,14 +300,14 @@ class HGARME(nn.Module):
         src_based_subg = subgs[-2]
         dst_based_subg = subgs[-1]
 
-        dst_based_x = {ntype: feat for ntype, feat in dst_based_subg.dstdata["feat"].items() if feat.shape[0] > 0}
-        src_based_x = {ntype: feat for ntype, feat in src_based_subg.dstdata["feat"].items() if feat.shape[0] > 0}
+        dst_based_x = {ntype: feat for ntype, feat in dst_based_subg.dstdata["onehot_feat"].items() if feat.shape[0] > 0}
+        src_based_x = {ntype: feat for ntype, feat in src_based_subg.dstdata["onehot_feat"].items() if feat.shape[0] > 0}
 
         dst_based = {"embs": {}, "mask_edges": {}, "att_sc": {}}
         src_based_embs = {}
 
         for use_ntype, use_x in dst_based_x.items():
-            src_x = [g.srcdata["feat"] for g in subgs]
+            src_x = [g.srcdata["onehot_feat"] for g in subgs]
             src_x = [{ntype: self.weight_T[ntype](x) for ntype, x in s_x.items()} for s_x in src_x]
             use_x = self.weight_T[use_ntype](use_x)
             if not self.all_edge_recons and use_ntype != self.target_type:
@@ -315,7 +321,7 @@ class HGARME(nn.Module):
             dst_based["att_sc"][use_ntype] = att_sc
             # exit()
         for use_ntype, use_x in src_based_x.items():
-            src_x = [g.srcdata["feat"] for g in subgs]
+            src_x = [g.srcdata["onehot_feat"] for g in subgs]
             src_x = [{ntype: self.weight_T[ntype](x) for ntype, x in s_x.items()} for s_x in src_x]
             use_x = self.weight_T[use_ntype](use_x)
             if not self.all_edge_recons and use_ntype == self.target_type:
