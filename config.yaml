@@ -100,7 +100,7 @@ heco_aminer:
   num_hidden: 512
   lr: 0.0008
   mask_rate: 0.4
-  dynamic_mask_rate: 0.4,0.002,0.8
+  dynamic_mask_rate: 0.4,0.01,0.8
   dropout: 0.4
   encoder: "HGraphSAGE"
   decoder: "HGraphSAGE"
@@ -155,7 +155,7 @@ PubMed:
   batch_size: 512
   eva_interval: 10
   eva_epoches: 200
-  num_layer: 1
+  num_layer: 2
   num_heads: 8
   num_out_heads: 1
   num_hidden: 512

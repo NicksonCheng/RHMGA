@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from models.HAN import HAN
 from models.SRN import Schema_Relation_Network
 from models.HGraphSAGE import HGraphSAGE
+
 from models.loss_func import cosine_similarity, mse, cross_entropy_loss
 from functools import partial
 from dgl.transforms import DropEdge
@@ -62,34 +63,23 @@ def module_selection(
     num_layer: int,
     dropout: float,
     module_type: str,
-    weight_T: nn.ModuleDict,
     status: str,
     aggregator: str,
 ):
-    if module_type == "HAN":
-        return HAN(
-            in_dim=in_dim,
-            hidden_dim=hidden_dim,
-            out_dim=out_dim,
-            num_layer=num_layer,
-            num_heads=num_heads,
-            num_out_heads=num_out_heads,
-            dropout=dropout,
-        )
-    elif module_type == "HGraphSAGE":
-        return HGraphSAGE(
-            relations=relations,
-            in_dim=in_dim,
-            hidden_dim=hidden_dim,
-            ntype_out_dim=out_dim,
-            num_layer=num_layer,
-            num_heads=num_heads,
-            num_out_heads=num_out_heads,
-            dropout=dropout,
-            weight_T=weight_T,
-            status=status,
-            aggregator=aggregator,
-        )
+
+    return HGraphSAGE(
+        relations=relations,
+        in_dim=in_dim,
+        hidden_dim=hidden_dim,
+        ntype_out_dim=out_dim,
+        num_layer=num_layer,
+        num_heads=num_heads,
+        num_out_heads=num_out_heads,
+        dropout=dropout,
+        status=status,
+        module_type=module_type,
+        aggregator=aggregator,
+    )
 
 
 class HGARME(nn.Module):
@@ -121,22 +111,18 @@ class HGARME(nn.Module):
         self.edge_mask = args.edge_mask
 
         # encoder/decoder hidden dimension
-        if self.encoder_type == "HGraphSAGE":
-            self.enc_dim = self.hidden_dim // self.num_heads
-        else:
-            self.enc_dim = self.hidden_dim
+
+        self.enc_dim = self.hidden_dim // self.num_heads
+
         self.enc_heads = self.num_heads
 
         self.dec_in_dim = self.hidden_dim  # enc_dim * enc_heads
-        if self.decoder_type == "HGraphSAGE":
-            self.dec_hidden_dim = self.hidden_dim // self.num_heads
-        else:
-            self.dec_hidden_dim = self.hidden_dim
+        self.dec_hidden_dim = self.hidden_dim // self.num_heads
         self.dec_heads = self.num_out_heads
 
         ## project all type of node into same dimension
         self.weight_T = nn.ModuleDict({t: nn.Linear(self.ntype_out_dim[t], self.hidden_dim) for t in self.all_types})
-        self.weight_T2 = nn.ModuleDict({t: nn.Linear(self.ntype_in_dim[t], self.hidden_dim) for t in self.all_types})
+        # self.weight_T2 = nn.ModuleDict({t: nn.Linear(self.ntype_in_dim[t], self.hidden_dim) for t in self.all_types})
         self.ntype_enc_mask_token = {t: nn.Parameter(torch.zeros(1, self.ntype_in_dim[t])) for t in self.all_types}
         self.encoder = module_selection(
             relations=relations,
@@ -148,7 +134,6 @@ class HGARME(nn.Module):
             num_layer=self.num_layer,
             dropout=self.dropout,
             module_type=self.encoder_type,
-            weight_T=self.weight_T,
             status="encoder",
             aggregator=self.aggregator,
         )
@@ -164,7 +149,6 @@ class HGARME(nn.Module):
             num_layer=self.num_layer,
             dropout=self.dropout,
             module_type=self.decoder_type,
-            weight_T=self.weight_T,
             status="decoder",
             aggregator=self.aggregator,
         )
@@ -300,14 +284,14 @@ class HGARME(nn.Module):
         src_based_subg = subgs[-2]
         dst_based_subg = subgs[-1]
 
-        dst_based_x = {ntype: feat for ntype, feat in dst_based_subg.dstdata["onehot_feat"].items() if feat.shape[0] > 0}
-        src_based_x = {ntype: feat for ntype, feat in src_based_subg.dstdata["onehot_feat"].items() if feat.shape[0] > 0}
+        dst_based_x = {ntype: feat for ntype, feat in dst_based_subg.dstdata["feat"].items() if feat.shape[0] > 0}
+        src_based_x = {ntype: feat for ntype, feat in src_based_subg.dstdata["feat"].items() if feat.shape[0] > 0}
 
         dst_based = {"embs": {}, "mask_edges": {}, "att_sc": {}}
         src_based_embs = {}
 
         for use_ntype, use_x in dst_based_x.items():
-            src_x = [g.srcdata["onehot_feat"] for g in subgs]
+            src_x = [g.srcdata["feat"] for g in subgs]
             src_x = [{ntype: self.weight_T[ntype](x) for ntype, x in s_x.items()} for s_x in src_x]
             use_x = self.weight_T[use_ntype](use_x)
             if not self.all_edge_recons and use_ntype != self.target_type:
@@ -321,7 +305,7 @@ class HGARME(nn.Module):
             dst_based["att_sc"][use_ntype] = att_sc
             # exit()
         for use_ntype, use_x in src_based_x.items():
-            src_x = [g.srcdata["onehot_feat"] for g in subgs]
+            src_x = [g.srcdata["feat"] for g in subgs]
             src_x = [{ntype: self.weight_T[ntype](x) for ntype, x in s_x.items()} for s_x in src_x]
             use_x = self.weight_T[use_ntype](use_x)
             if not self.all_edge_recons and use_ntype == self.target_type:
@@ -448,10 +432,9 @@ class HGARME(nn.Module):
             hidden_rep = self.encoder_to_decoder(enc_rep)
             hidden_rep[mask_nodes] = 0.0
 
-            if self.decoder_type == "HGraphSAGE":
-                dec_rep, att_sc = self.decoder(subgs, 1, relations, use_ntype, hidden_rep, src_x, "decoder")
-            elif self.decoder_type == "MLP":
-                dec_rep = self.decoder(hidden_rep)
+
+            dec_rep, att_sc = self.decoder(subgs, 1, relations, use_ntype, hidden_rep, src_x, "decoder")
+
             ## calculate all type nodes feature reconstruction
 
             if mask_nodes.shape[0] == 0:

@@ -9,6 +9,7 @@ from dgl.nn.pytorch.conv import GATConv
 # from models.gat import GATConv
 from dgl.ops import edge_softmax
 from dgl.heterograph import DGLBlock
+from models.GAT import GATAggregator
 
 
 class HeCoGATConv(nn.Module):
@@ -82,16 +83,13 @@ class Schema_Relation_Network(nn.Module):
         relations: list,
         in_dim: int,
         out_dim: int | dict,
-        weight_T: nn.ModuleDict,
         num_heads: int,
-        status: str,
         aggregator: str,
     ):
         super(Schema_Relation_Network, self).__init__()
         self.in_dim = in_dim
         self.out_dim = out_dim
         self.relations = relations
-        self.weight_T = weight_T
         self.num_heads = num_heads
         self.aggregator = aggregator
         ## project all type of node into same dimension
@@ -135,19 +133,6 @@ class Schema_Relation_Network(nn.Module):
         src_feat: dict,
         status: str,
     ):
-        ## Linear Transformation to same dimension
-        neighbors_feat = {}
-
-        # if dst_feat.shape[1] != self.hidden_dim * self.num_heads:
-        #     dst_feat = self.weight_T[dst_ntype](dst_feat)
-
-        # for ntype, feat in src_feat.items():
-        #     if feat.shape[1] != self.hidden_dim:
-        #         neighbors_feat[ntype] = self.weight_T[ntype](feat)
-        #     else:
-        #         neighbors_feat[ntype] = feat
-
-        ## aggregate the neighbor based on the relation
         z_r = {}
         for rels_tuple, rel_graph in rels_subgraphs.items():
             src_ntype = rels_tuple[0]
@@ -189,8 +174,8 @@ class HGraphSAGE(nn.Module):
         num_heads: int,
         num_out_heads: int,
         dropout: float,
-        weight_T: nn.ModuleDict,
         status: str,
+        module_type:str,
         aggregator: str,
     ):
         super(HGraphSAGE, self).__init__()
@@ -198,30 +183,37 @@ class HGraphSAGE(nn.Module):
         self.hidden_dim = hidden_dim
         self.ntype_out_dim = ntype_out_dim
         self.num_layer = num_layer
-        self.weight_T = weight_T
+        self.module_type=module_type
         self.layers = nn.ModuleList()
         ## because this is HGraphSAGE, the head,dimension problem should be reverse compared to tradictional multilayer GAT
+        self.edcoder= self.get_edcoder()
         if num_layer == 1:
-            self.layers.append(Schema_Relation_Network(relations, self.in_dim, self.hidden_dim, weight_T, num_out_heads, status, aggregator))
+            self.layers.append(self.edcoder(relations, self.in_dim, self.hidden_dim, num_out_heads, aggregator))
+            
         else:
             self.layers.append(
-                Schema_Relation_Network(relations, self.hidden_dim * num_heads, self.hidden_dim, weight_T, num_out_heads, status, aggregator)
+                self.edcoder(relations, self.hidden_dim * num_heads, self.hidden_dim,  num_out_heads, aggregator)
             )
             for i in range(1, num_layer - 1):
                 self.layers.append(
-                    Schema_Relation_Network(relations, self.hidden_dim * num_heads, self.hidden_dim, weight_T, num_heads, status, aggregator)
+                    self.edcoder(relations, self.hidden_dim * num_heads, self.hidden_dim,  num_heads, aggregator)
                 )
-            self.layers.append(Schema_Relation_Network(relations, self.in_dim, self.hidden_dim, weight_T, num_heads, status, aggregator))
-
+            self.layers.append(self.edcoder(relations, self.in_dim, self.hidden_dim,  num_heads, aggregator))
         ## this is for src_feat encoder
         if status == "encoder":
             extra_in_dim = self.in_dim if num_layer == 1 else self.hidden_dim * num_heads
-            self.layers.append(Schema_Relation_Network(relations, extra_in_dim, self.hidden_dim, weight_T, num_heads, status, aggregator))
+            self.layers.append(self.edcoder(relations, extra_in_dim, self.hidden_dim,  num_heads, aggregator))
 
         ## out_dim has different type of nodes
         if status == "decoder":
             self.ntypes_decoder_trans = nn.ModuleDict({ntype: nn.Linear(hidden_dim, out_dim) for ntype, out_dim in self.ntype_out_dim.items()})
-
+    def get_edcoder(self):
+        if self.module_type == "HGraphSAGE":
+            return Schema_Relation_Network
+        elif self.module_type == "GAT":
+            return GATAggregator
+        else:
+            raise ValueError(f"Unknown aggregator: {self.module_type}")
     ## filter non_zero in_degree dst node
     def mask_edges_func(self, rels_subg: DGLBlock, mask_rate: float = 0.3):
         # src_nodes, dst_nodes = rels_subg.edges()
@@ -300,8 +292,8 @@ class HGraphSAGE(nn.Module):
                 use_src_ntype_feats[ntype], att_sc, _, _ = self.neighbor_sampling(
                     subgs, curr_layer + 1, relations, ntype, feat, subgs_src_ntype_feats, status
                 )
-        dst_feat, att_sc = self.layers[curr_layer - 1](rels_subgraphs, dst_ntype, dst_feat, use_src_ntype_feats, status)
-
+        used_subg=rels_subgraphs if self.module_type=="HGraphSAGE" else curr_subg
+        dst_feat, att_sc = self.layers[curr_layer - 1](used_subg, dst_ntype, dst_feat, use_src_ntype_feats, status)
         if curr_layer == self.num_layer and status == "encoder":
             ## need to update the last layer src_feat
             next_layer = curr_layer + 1
@@ -317,8 +309,9 @@ class HGraphSAGE(nn.Module):
                     next_subg, relations, ntype, next_subg_src_feats, False, curr_mask_rate
                 )
                 ## current layer's src feat will be next layer's dst feat
+                used_subg=next_rels_subgraphs if self.module_type=="HGraphSAGE" else next_subg
                 subgs_src_ntype_feats[-curr_layer][ntype], att_sc = self.layers[next_layer - 1](
-                    next_rels_subgraphs, ntype, feat, use_src_ntype_feats, status
+                    used_subg, ntype, feat, use_src_ntype_feats, status
                 )
         return dst_feat, att_sc, rel_mask_edges, rel_keep_edges
 
@@ -333,6 +326,7 @@ class HGraphSAGE(nn.Module):
         status: str = "encoder",
         curr_mask_rate: float = 0.3,
     ):
+
         z, att_sc, rel_mask_edge, rel_keep_edge = self.neighbor_sampling(
             subgs, start_layer, relations, dst_ntype, dst_feat, subgs_src_ntype_feats, status, curr_mask_rate
         )

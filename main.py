@@ -145,9 +145,9 @@ def train(rank=None, world_size=None, args=None):
     num_classes = data.num_classes
     train_nids = {ntype: torch.arange(graph.num_nodes(ntype)) for ntype in all_types}
 
-    for ntype, feat in graph.ndata["feat"].items():
-        num_nodes = graph.num_nodes(ntype)
-        graph.nodes[ntype].data["onehot_feat"] = torch.from_numpy(sp.eye(num_nodes).toarray()).float()
+    # for ntype, feat in graph.ndata["feat"].items():
+    #     num_nodes = graph.num_nodes(ntype)
+    #     graph.nodes[ntype].data["onehot_feat"] = torch.from_numpy(sp.eye(num_nodes).toarray()).float()
     masked_graph = {}
     if data.has_label_ratio:
         for ratio in data.label_ratio:
@@ -181,7 +181,7 @@ def train(rank=None, world_size=None, args=None):
         target_type=target_type,
         all_types=all_types,
         target_in_dim=graph.ndata["feat"][target_type].shape[1],
-        ntype_in_dim={ntype: feat.shape[1] for ntype, feat in graph.ndata["onehot_feat"].items()},
+        ntype_in_dim={ntype: feat.shape[1] for ntype, feat in graph.ndata["feat"].items()},
         ntype_out_dim={ntype: feat.shape[1] for ntype, feat in graph.ndata["feat"].items()},
         args=args,
     )
@@ -232,192 +232,196 @@ def train(rank=None, world_size=None, args=None):
         best_nc_performance = {"auc_roc": 0.0, "micro_f1": 0.0, "macro_f1": 0.0, "total": 0.0, "epoch": 0}
     best_cls_performance = {"ari": 0.0, "nmi": 0.0, "total": 0.0, "epoch": 0}
     print(f"Num Batches:{len(dataloader)}")
-    for epoch in tqdm(range(args.epoches), total=args.epoches, desc=colorize("Epoch Training", "blue")):
-        model.train()
-        train_loss = 0.0
-        for i, mini_batch in enumerate(dataloader):
-            src_nodes, dst_nodes, subgs = mini_batch
+    with dataloader.enable_cpu_affinity():
+        for epoch in tqdm(range(args.epoches), total=args.epoches, desc=colorize("Epoch Training", "blue")):
+            model.train()
+            train_loss = 0.0
+            for i, mini_batch in enumerate(dataloader):
+                src_nodes, dst_nodes, subgs = mini_batch
 
-            if args.parallel:
-                subgs = [sg.to(rank) for sg in subgs]
-            else:
-                subgs = [sg.to(device_0) for sg in subgs]
-            curr_mask_rate, feat_loss, adj_loss, degree_loss = model(subgs, relations, epoch, i)
-            # print(feat_loss, adj_loss, degree_loss * 0.01)
-            loss = args.loss_alpha * feat_loss + adj_loss
-            # print(loss)
-            train_loss += loss.item()
-            loss.backward()
-            if not args.accumu_grad:
+                if args.parallel:
+                    subgs = [sg.to(rank) for sg in subgs]
+                else:
+                    subgs = [sg.to(device_0) for sg in subgs]
+                curr_mask_rate, feat_loss, adj_loss, degree_loss = model(subgs, relations, epoch, i)
+                # print(feat_loss, adj_loss, degree_loss * 0.01)
+                loss = args.feat_alpha * feat_loss + args.edge_alpha * adj_loss
+                # print(loss)
+                train_loss += loss.item()
+                loss.backward()
+                if not args.accumu_grad:
+                    optimizer.step()
+                    scheduler.step()
+                    optimizer.zero_grad()
+                # break
+            if args.accumu_grad:
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad()
-            # break
-        if args.accumu_grad:
-            optimizer.step()
-            scheduler.step()
-            optimizer.zero_grad()
 
-        avg_train_loss = train_loss / len(dataloader)
+            avg_train_loss = train_loss / len(dataloader)
 
-        # Gather losses from all processes
-        if args.parallel:
-            avg_train_loss = torch.tensor([avg_train_loss], device=rank)
-            dist.reduce(avg_train_loss, dst=0, op=dist.ReduceOp.SUM)
-            avg_train_loss = avg_train_loss.item() / world_size
-        if not args.parallel or rank == 0:
-            print(f"Epoch:{epoch+1}/{args.epoches} Training Loss:{(avg_train_loss)} Learning_rate={scheduler.get_last_lr()}")
-            total_loss.append(avg_train_loss)
-            if avg_train_loss < min_loss:
-                min_loss = avg_train_loss
-                best_model_dict = model.state_dict()
-                best_epoch = epoch + 1
-                wait_count = 0
-            else:
-                wait_count += 1
+            # Gather losses from all processes
+            if args.parallel:
+                avg_train_loss = torch.tensor([avg_train_loss], device=rank)
+                dist.reduce(avg_train_loss, dst=0, op=dist.ReduceOp.SUM)
+                avg_train_loss = avg_train_loss.item() / world_size
+            if not args.parallel or rank == 0:
+                print(f"Epoch:{epoch+1}/{args.epoches} Training Loss:{(avg_train_loss)} Learning_rate={scheduler.get_last_lr()}")
+                total_loss.append(avg_train_loss)
+                if avg_train_loss < min_loss:
+                    min_loss = avg_train_loss
+                    best_model_dict = model.state_dict()
+                    best_epoch = epoch + 1
+                    wait_count = 0
+                else:
+                    wait_count += 1
 
-            ## Evaluate Embedding Performance
-            if wait_count > 5:
-                # if epoch > 0 and ((epoch + 1) % args.eva_interval) == 0:
-                model.load_state_dict(best_model_dict)
-                model.eval()
-                log_file_name = name_file(args, "log", log_times)
-                with open(log_file_name, "a") as log_file:
-                    if os.path.getsize(log_file_name) == 0:
-                        log_file.write(f"{args}\n")
-                    log_file.write(f"Best Epoches:{best_epoch}-----------------------------------\n")
-                    log_file.write("Current Mask Rate:{}\n".format(curr_mask_rate))
-                    log_file.write(f"Loss:{min_loss}\n")
-                    # enc_feat = features[target_type]
-                    if args.parallel:
-                        enc_feat, att_sc = model.module.encode_embedding(graph, relations, target_type, "evaluation", rank)
-                    else:
-                        enc_feat, att_sc = model.encode_embedding(graph, relations, target_type, "evaluation", device_0)
-                    target_type_labels = graph.nodes[target_type].data["label"]
-                    if args.task == "classification" or args.task == "all":
+                ## Evaluate Embedding Performance
+                if wait_count > 5:
+                    # if epoch > 0 and ((epoch + 1) % args.eva_interval) == 0:
+                    model.load_state_dict(best_model_dict)
+                    model.eval()
+                    log_file_name = name_file(args, "log", log_times)
+                    if(epoch > 0):
+                        with open(log_file_name, "a") as log_file:
+                            if os.path.getsize(log_file_name) == 0:
+                                log_file.write(f"{args}\n")
+                            log_file.write(f"Best Epoches:{best_epoch}-----------------------------------\n")
+                            log_file.write("Current Mask Rate:{}\n".format(curr_mask_rate))
+                            log_file.write(f"Loss:{min_loss}\n")
+                            # enc_feat = features[target_type]
+                            if args.parallel:
+                                enc_feat, att_sc = model.module.encode_embedding(graph, relations, target_type, "evaluation", rank)
+                            else:
+                                enc_feat, att_sc = model.encode_embedding(graph, relations, target_type, "evaluation", device_0)
+                            target_type_labels = graph.nodes[target_type].data["label"]
+                            if args.task == "classification" or args.task == "all":
 
-                        ## load model for classification
-                        # model.load_state_dict(torch.load(f"analysis/{args.dataset}/best_classification_[2024-07-23_15:31:36].pth"))
-                        # model.eval()
-                        # enc_feat, att_sc = model.encode_embedding(
-                        #     graph,
-                        #     relations,
-                        #     target_type,
-                        #     "evaluation",
-                        # )
-                        if data.has_label_ratio:
-                            ratio_mean = {}
-                            for ratio in data.label_ratio:
-                                for split in masked_graph[ratio].keys():
-                                    masked_graph[ratio][split] = masked_graph[ratio][split].detach()
-                                mean, std = node_classification_evaluate(
-                                    device_1, enc_feat, args, num_classes, target_type_labels, masked_graph[ratio], data.multilabel
+                                ## load model for classification
+                                # model.load_state_dict(torch.load(f"analysis/{args.dataset}/best_classification_[2024-07-23_15:31:36].pth"))
+                                # model.eval()
+                                # enc_feat, att_sc = model.encode_embedding(
+                                #     graph,
+                                #     relations,
+                                #     target_type,
+                                #     "evaluation",
+                                # )
+                                if data.has_label_ratio:
+                                    ratio_mean = {}
+                                    for ratio in data.label_ratio:
+                                        for split in masked_graph[ratio].keys():
+                                            masked_graph[ratio][split] = masked_graph[ratio][split].detach()
+                                        mean, std = node_classification_evaluate(
+                                            device_1, enc_feat, args, num_classes, target_type_labels, masked_graph[ratio], data.multilabel
+                                        )
+
+                                        if ratio not in performance:
+                                            performance[ratio] = {"auc_roc": [], "Micro-F1": [], "Macro-F1": [], "Loss": [], "Epoches": []}
+                                        ratio_mean[ratio] = mean
+                                        performance[ratio]["auc_roc"].append(mean["auc_roc"])
+                                        performance[ratio]["Micro-F1"].append(mean["micro_f1"])
+                                        performance[ratio]["Macro-F1"].append(mean["macro_f1"])
+                                        performance[ratio]["Loss"].append(min_loss)
+                                        performance[ratio]["Epoches"].append(best_epoch)
+                                        log_file.write(
+                                            "\t Label Rate:{}% Accuracy:[{:.4f}, {:.4f}] Micro-F1:[{:.4f}, {:.4f}] Macro-F1:[{:.4f}, {:.4f}]  \n".format(
+                                                ratio,
+                                                mean["auc_roc"],
+                                                std["auc_roc"],
+                                                mean["micro_f1"],
+                                                std["micro_f1"],
+                                                mean["macro_f1"],
+                                                std["macro_f1"],
+                                            )
+                                        )
+                                    save_best_performance(
+                                        model,
+                                        best_nc_performance,
+                                        ratio_mean,
+                                        "classification",
+                                        args.dataset,
+                                        best_epoch,
+                                        log_times,
+                                        args.save_model,
+                                        True,
+                                    )
+
+                                else:
+                                    if args.dataset == "imdb":
+                                        mean, std = node_classification_evaluate(
+                                            device_1, enc_feat, args, num_classes, target_type_labels, masked_graph, data.multilabel
+                                        )
+                                    else:
+                                        mean, std = LGS_node_classification_evaluate(
+                                            device_1, enc_feat, args, num_classes, target_type_labels, masked_graph, data.multilabel
+                                        )
+
+                                    if not performance:
+                                        performance = {"auc_roc": [], "Micro-F1": [], "Macro-F1": [], "Loss": [], "Epoches": []}
+                                    performance["auc_roc"].append(mean["auc_roc"])
+                                    performance["Micro-F1"].append(mean["micro_f1"])
+                                    performance["Macro-F1"].append(mean["macro_f1"])
+                                    performance["Loss"].append(min_loss)
+                                    performance["Epoches"].append(best_epoch)
+                                    log_file.write(
+                                        "\t ACC:[{:4f},{:4f}] Micro-F1:[{:.4f}, {:.4f}] Macro-F1:[{:.4f}, {:.4f}]  \n".format(
+                                            mean["auc_roc"],
+                                            std["auc_roc"],
+                                            mean["micro_f1"],
+                                            std["micro_f1"],
+                                            mean["macro_f1"],
+                                            std["macro_f1"],
+                                        )
+                                    )
+                            if args.task == "clustering" or args.task == "all":
+
+                                ## load model for clustering
+                                # model.load_state_dict(torch.load(f"analysis/{args.dataset}/best_clustering_[2024-07-23_15:31:36].pth"))
+                                # model.eval()
+                                # enc_feat, att_sc = model.encode_embedding(
+                                #     graph,
+                                #     relations,
+                                #     target_type,
+                                #     "evaluation",
+                                # )
+
+                                ## plot t-SNE result
+                                emb_2d = visualization(args.dataset, enc_feat, target_type_labels, log_times, best_epoch, args.cls_visual)
+
+                                if not data.has_label_ratio:
+                                    labeled_indices = torch.where(masked_graph["total"] > 0)[0]
+                                    enc_feat = enc_feat[labeled_indices]
+                                    target_type_labels = target_type_labels[labeled_indices].squeeze()
+                                cls_enc_emb = enc_feat if args.dataset != "aminer" else emb_2d
+                                mean, std = node_clustering_evaluate(cls_enc_emb, target_type_labels, num_classes, 10)
+
+                                save_best_performance(
+                                    model, best_cls_performance, mean, "clustering", args.dataset, best_epoch, log_times, args.save_model
                                 )
-
-                                if ratio not in performance:
-                                    performance[ratio] = {"auc_roc": [], "Micro-F1": [], "Macro-F1": [], "Loss": [], "Epoches": []}
-                                ratio_mean[ratio] = mean
-                                performance[ratio]["auc_roc"].append(mean["auc_roc"])
-                                performance[ratio]["Micro-F1"].append(mean["micro_f1"])
-                                performance[ratio]["Macro-F1"].append(mean["macro_f1"])
-                                performance[ratio]["Loss"].append(min_loss)
-                                performance[ratio]["Epoches"].append(best_epoch)
                                 log_file.write(
-                                    "\t Label Rate:{}% Accuracy:[{:.4f}, {:.4f}] Micro-F1:[{:.4f}, {:.4f}] Macro-F1:[{:.4f}, {:.4f}]  \n".format(
-                                        ratio,
-                                        mean["auc_roc"],
-                                        std["auc_roc"],
-                                        mean["micro_f1"],
-                                        std["micro_f1"],
-                                        mean["macro_f1"],
-                                        std["macro_f1"],
+                                    "\t[clustering] nmi: [{:.4f}, {:.4f}] ari: [{:.4f}, {:.4f}]\n".format(
+                                        mean["nmi"],
+                                        std["nmi"],
+                                        mean["ari"],
+                                        std["ari"],
                                     )
                                 )
-                            save_best_performance(
-                                model,
-                                best_nc_performance,
-                                ratio_mean,
-                                "classification",
-                                args.dataset,
-                                best_epoch,
-                                log_times,
-                                args.save_model,
-                                True,
-                            )
 
-                        else:
-                            if args.dataset == "imdb":
-                                mean, std = node_classification_evaluate(
-                                    device_1, enc_feat, args, num_classes, target_type_labels, masked_graph, data.multilabel
-                                )
-                            else:
-                                mean, std = LGS_node_classification_evaluate(
-                                    device_1, enc_feat, args, num_classes, target_type_labels, masked_graph, data.multilabel
-                                )
-
-                            if not performance:
-                                performance = {"auc_roc": [], "Micro-F1": [], "Macro-F1": [], "Loss": [], "Epoches": []}
-                            performance["auc_roc"].append(mean["auc_roc"])
-                            performance["Micro-F1"].append(mean["micro_f1"])
-                            performance["Macro-F1"].append(mean["macro_f1"])
-                            performance["Loss"].append(min_loss)
-                            performance["Epoches"].append(best_epoch)
-                            log_file.write(
-                                "\t ACC:[{:4f},{:4f}] Micro-F1:[{:.4f}, {:.4f}] Macro-F1:[{:.4f}, {:.4f}]  \n".format(
-                                    mean["auc_roc"],
-                                    std["auc_roc"],
-                                    mean["micro_f1"],
-                                    std["micro_f1"],
-                                    mean["macro_f1"],
-                                    std["macro_f1"],
-                                )
-                            )
-                    if args.task == "clustering" or args.task == "all":
-
-                        ## load model for clustering
-                        # model.load_state_dict(torch.load(f"analysis/{args.dataset}/best_clustering_[2024-07-23_15:31:36].pth"))
-                        # model.eval()
-                        # enc_feat, att_sc = model.encode_embedding(
-                        #     graph,
-                        #     relations,
-                        #     target_type,
-                        #     "evaluation",
-                        # )
-
-                        ## plot t-SNE result
-                        emb_2d = visualization(args.dataset, enc_feat, target_type_labels, log_times, best_epoch, args.cls_visual)
-
-                        if not data.has_label_ratio:
-                            labeled_indices = torch.where(masked_graph["total"] > 0)[0]
-                            enc_feat = enc_feat[labeled_indices]
-                            target_type_labels = target_type_labels[labeled_indices].squeeze()
-                        cls_enc_emb = enc_feat if args.dataset != "aminer" else emb_2d
-                        mean, std = node_clustering_evaluate(cls_enc_emb, target_type_labels, num_classes, 10)
-
-                        save_best_performance(model, best_cls_performance, mean, "clustering", args.dataset, best_epoch, log_times, args.save_model)
-                        log_file.write(
-                            "\t[clustering] nmi: [{:.4f}, {:.4f}] ari: [{:.4f}, {:.4f}]\n".format(
-                                mean["nmi"],
-                                std["nmi"],
-                                mean["ari"],
-                                std["ari"],
-                            )
-                        )
-
-                    # else:
-                    #     auc, mrr = lp_evaluate(f"data/CKD_data/{args.dataset}/", enc_feat)
-                    #     log_file.write(f"\t AUC: {auc} MRR: {mrr}")
-                    # elif args.task == "link_prediction":
-                    #     auc, mrr = lp_evaluate(data.test_file, enc_feat)
-                    #     log_file.write(f"\t AUC: {auc} MRR: {mrr}")
-                    log_file.close()
-                ## reset strategy parameter
-                wait_count = 0
-                best_model_dict = None
-                best_epoch = 0
-                min_loss = 1e8
-    if args.parallel:
-        dist.destroy_process_group()
+                            # else:
+                            #     auc, mrr = lp_evaluate(f"data/CKD_data/{args.dataset}/", enc_feat)
+                            #     log_file.write(f"\t AUC: {auc} MRR: {mrr}")
+                            # elif args.task == "link_prediction":
+                            #     auc, mrr = lp_evaluate(data.test_file, enc_feat)
+                            #     log_file.write(f"\t AUC: {auc} MRR: {mrr}")
+                            log_file.close()
+                    ## reset strategy parameter
+                    wait_count = 0
+                    best_model_dict = None
+                    best_epoch = 0
+                    min_loss = 1e8
+        if args.parallel:
+            dist.destroy_process_group()
 
     ## save the best performance
     with open(log_file_name, "a") as log_file:
@@ -513,7 +517,8 @@ if __name__ == "__main__":
     parser.add_argument("--nei_sample", type=str, default="full", help="multilayer neighbor sample")
     parser.add_argument("--use_feat", type=str, default="origin", help="way for original feature construction")
     parser.add_argument("--aggregator", type=str, default="attention", help="way for semantic aggregation")
-    parser.add_argument("--loss_alpha", type=float, default=1.0, help="feature reconstruction loss alpha weight")
+    parser.add_argument("--feat_alpha", type=float, default=1.0, help="feature reconstruction loss alpha weight")
+    parser.add_argument("--edge_alpha", type=float, default=1.0, help="edge reconstruction loss alpha weight")
     parser.add_argument("--edge_mask", default=True, help="mask edge or not")
     parser.add_argument("--feat_mask", default=True, help="mask node feature or not")
     ## event controller

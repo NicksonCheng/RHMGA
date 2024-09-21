@@ -34,7 +34,7 @@ def name_file(args, file, log_times):
     curr_file = os.path.dirname(os.path.abspath(__file__))
     project_path = os.path.join(curr_file, "..")
     if file == "log":
-        write_path = os.path.join(file, "performance", args.dataset)
+        write_path = os.path.join(file, "performance", args.dataset, args.save_folder)
         log_path = os.path.join(project_path, write_path)
         if not os.path.exists(log_path):
             os.makedirs(log_path)
