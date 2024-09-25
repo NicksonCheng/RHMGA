@@ -134,7 +134,7 @@ def train(rank=None, world_size=None, args=None):
         setup(rank, world_size)
         signal.signal(signal.SIGINT, signal_handler)  # Register signal handler
     device_0 = torch.device(f"cuda:{args.devices}" if torch.cuda.is_available() else "cpu")
-    device_1 = torch.device(f"cuda:{args.devices}" if torch.cuda.is_available() else "cpu")
+    device_1 = torch.device(f"cuda:{args.devices ^ 1}" if torch.cuda.is_available() else "cpu")
     data = heterogeneous_dataset[args.dataset]["name"](args.reverse_edge, args.use_feat, args.devices)
     print("Preprocessing Time taken:", time.time() - start_t, "seconds")
     start_t = time.time()

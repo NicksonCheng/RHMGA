@@ -48,12 +48,12 @@ def name_file(args, file, log_times):
     if args.edge_recons:
         file_name += "edge"
         if args.all_edge_recons:
-            file_name += "[all]"
+            file_name += f"{args.edge_alpha}"
         file_name += "_"
     if args.feat_recons:
         file_name += "feat"
         if args.all_feat_recons:
-            file_name += "[all]"
+            file_name += f"{args.feat_alpha}"
 
     file_name += f")_{args.dataset}"
     if file == "log":

@@ -9,8 +9,7 @@ from dgl.nn.pytorch.conv import GATConv
 # from models.gat import GATConv
 from dgl.ops import edge_softmax
 from dgl.heterograph import DGLBlock
-from models.GAT import GATAggregator
-
+from models.GAT import AggregateModule
 
 class HeCoGATConv(nn.Module):
     def __init__(self, hidden_dim, attn_drop=0.0, negative_slope=0.01, activation=None):
@@ -133,6 +132,7 @@ class Schema_Relation_Network(nn.Module):
         src_feat: dict,
         status: str,
     ):
+        
         z_r = {}
         for rels_tuple, rel_graph in rels_subgraphs.items():
             src_ntype = rels_tuple[0]
@@ -145,15 +145,14 @@ class Schema_Relation_Network(nn.Module):
         ## prevent only one dst node or only one relation
         z_r_key = list(z_r.keys())
         z_r = torch.stack(list(z_r.values()), dim=1)
-        z, att_sc = None, None
-        if self.aggregator == "mean":
-            att_sc = torch.ones(z_r.shape[1])
-            z = z_r.mean(dim=1)
-
-        elif self.aggregator == "attention":
+        z, att_sc = None, torch.ones(z_r.shape[1])
+        if self.aggregator == "attention":
             z, att_sc = self.semantic_attention(z_r)
+        elif self.aggregator == "sum":
+            z=torch.sum(z_r,dim=1)
+        elif self.aggregator == "mean":
+            z=z_r.mean(dim=1)
         elif self.aggregator == "concatenate":
-            att_sc = torch.ones(z_r.shape[1])
             z = z_r.view(z_r.shape[0], -1)
             z = self.concate_trans[dst_ntype](z)
         if att_sc.dim() == 0:
@@ -183,35 +182,36 @@ class HGraphSAGE(nn.Module):
         self.hidden_dim = hidden_dim
         self.ntype_out_dim = ntype_out_dim
         self.num_layer = num_layer
+        self.aggregator=aggregator
         self.module_type=module_type
         self.layers = nn.ModuleList()
         ## because this is HGraphSAGE, the head,dimension problem should be reverse compared to tradictional multilayer GAT
         self.edcoder= self.get_edcoder()
         if num_layer == 1:
-            self.layers.append(self.edcoder(relations, self.in_dim, self.hidden_dim, num_out_heads, aggregator))
+            self.layers.append(self.edcoder(relations, self.in_dim, self.hidden_dim, num_out_heads))
             
         else:
             self.layers.append(
-                self.edcoder(relations, self.hidden_dim * num_heads, self.hidden_dim,  num_out_heads, aggregator)
+                self.edcoder(relations, self.hidden_dim * num_heads, self.hidden_dim,  num_out_heads)
             )
             for i in range(1, num_layer - 1):
                 self.layers.append(
-                    self.edcoder(relations, self.hidden_dim * num_heads, self.hidden_dim,  num_heads, aggregator)
+                    self.edcoder(relations, self.hidden_dim * num_heads, self.hidden_dim,  num_heads)
                 )
-            self.layers.append(self.edcoder(relations, self.in_dim, self.hidden_dim,  num_heads, aggregator))
+            self.layers.append(self.edcoder(relations, self.in_dim, self.hidden_dim,  num_heads))
         ## this is for src_feat encoder
         if status == "encoder":
             extra_in_dim = self.in_dim if num_layer == 1 else self.hidden_dim * num_heads
-            self.layers.append(self.edcoder(relations, extra_in_dim, self.hidden_dim,  num_heads, aggregator))
+            self.layers.append(self.edcoder(relations, extra_in_dim, self.hidden_dim,  num_heads))
 
         ## out_dim has different type of nodes
         if status == "decoder":
             self.ntypes_decoder_trans = nn.ModuleDict({ntype: nn.Linear(hidden_dim, out_dim) for ntype, out_dim in self.ntype_out_dim.items()})
     def get_edcoder(self):
         if self.module_type == "HGraphSAGE":
-            return Schema_Relation_Network
-        elif self.module_type == "GAT":
-            return GATAggregator
+            return lambda *args, **kwargs: Schema_Relation_Network(*args,**kwargs,aggregator=self.aggregator)
+        elif self.module_type == "GAT" or self.module_type =="RGCN":
+            return lambda *args, **kwargs: AggregateModule(*args,**kwargs,module_name=self.module_type)
         else:
             raise ValueError(f"Unknown aggregator: {self.module_type}")
     ## filter non_zero in_degree dst node

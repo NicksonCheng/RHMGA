@@ -111,13 +111,18 @@ class HGARME(nn.Module):
         self.edge_mask = args.edge_mask
 
         # encoder/decoder hidden dimension
-
-        self.enc_dim = self.hidden_dim // self.num_heads
-
-        self.enc_heads = self.num_heads
+        if self.encoder_type == "RGCN":
+            self.enc_dim = self.hidden_dim
+            self.enc_heads=1
+        else:
+            self.enc_dim = self.hidden_dim // self.num_heads
+            self.enc_heads = self.num_heads
 
         self.dec_in_dim = self.hidden_dim  # enc_dim * enc_heads
-        self.dec_hidden_dim = self.hidden_dim // self.num_heads
+        if self.encoder_type == "RGCN":
+            self.dec_hidden_dim = self.hidden_dim
+        else:
+            self.dec_hidden_dim = self.hidden_dim // self.num_heads
         self.dec_heads = self.num_out_heads
 
         ## project all type of node into same dimension
