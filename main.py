@@ -134,7 +134,7 @@ def train(rank=None, world_size=None, args=None):
         setup(rank, world_size)
         signal.signal(signal.SIGINT, signal_handler)  # Register signal handler
     device_0 = torch.device(f"cuda:{args.devices}" if torch.cuda.is_available() else "cpu")
-    device_1 = torch.device(f"cuda:{args.devices ^ 1}" if torch.cuda.is_available() else "cpu")
+    device_1 = torch.device(f"cuda:{args.devices}" if torch.cuda.is_available() else "cpu")
     data = heterogeneous_dataset[args.dataset]["name"](args.reverse_edge, args.use_feat, args.devices)
     print("Preprocessing Time taken:", time.time() - start_t, "seconds")
     start_t = time.time()
@@ -393,7 +393,7 @@ def train(rank=None, world_size=None, args=None):
                                     labeled_indices = torch.where(masked_graph["total"] > 0)[0]
                                     enc_feat = enc_feat[labeled_indices]
                                     target_type_labels = target_type_labels[labeled_indices].squeeze()
-                                cls_enc_emb = enc_feat if args.dataset != "aminer" else emb_2d
+                                cls_enc_emb = enc_feat if args.dataset != "heco_aminer" else emb_2d
                                 mean, std = node_clustering_evaluate(cls_enc_emb, target_type_labels, num_classes, 10)
 
                                 save_best_performance(

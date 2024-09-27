@@ -109,4 +109,7 @@ def save_best_performance(model, best_performance, metrics_mean, task, dataset, 
             for metric, value in metrics_mean.items():
                 best_performance[metric] = value
             if save_model:
+                save_path=f"analysis/{dataset}"
+                if(not os.path.exists(save_path)):
+                    os.mkdir(save_path)
                 torch.save(model.state_dict(), f"analysis/{dataset}/best_{task}_{log_time}.pth")
