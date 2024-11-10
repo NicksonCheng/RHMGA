@@ -223,7 +223,7 @@ def node_classification_evaluate(device, enc_feat, args, num_classes, labels, ma
 
 
 def LGS_node_classification_evaluate(device, enc_feat, args, num_classes, labels, masked_graph, multilabel):
-    n_split = 10
+    n_split = 5
     labeled_indices = torch.where(masked_graph["total"] > 0)[0]  ## because the mask is a tensor, so we need to use torch.where to get the indices
     ## node all nodes has labels
     labels_dict = labels[labeled_indices].squeeze().detach().cpu()
