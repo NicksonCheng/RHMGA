@@ -4,12 +4,13 @@ imdb:
   batch_size: 512
   eva_interval: 10
   eva_epoches: 200
-  num_layer: 3
+  num_layer: 1
   num_heads: 8
   num_out_heads: 1
   num_hidden: 512
-  lr: 0.0001
-  mask_rate: 0.3
+  lr: 0.001
+  mask_rate: 0.5
+  dynamic_mask_rate: 0.4,0.01,0.8
   dropout: 0.4
   encoder: "HGraphSAGE"
   decoder: "HGraphSAGE"
@@ -21,9 +22,12 @@ imdb:
   scheduler: True
   edge_recons: True
   feat_recons: True
+  degree_recons: False
   all_feat_recons: True
   all_edge_recons: True
+  all_degree_recons: False
   mp2vec_feat: False
+  accumu_grad: False
 
 heco_acm:
   dataset: "heco_acm"
@@ -152,18 +156,19 @@ heco_freebase:
 PubMed:
   dataset: "PubMed"
   epoches: 500
-  batch_size: 512
+  batch_size: 2048
   eva_interval: 10
   eva_epoches: 200
-  num_layer: 2
+  num_layer: 1
   num_heads: 8
   num_out_heads: 1
   num_hidden: 512
   lr: 0.0008
   mask_rate: 0.5
+  dynamic_mask_rate: 0.4,0.01,0.8
   dropout: 0.4
-  encoder: "HGraphSAGE"
-  decoder: "HGraphSAGE"
+  encoder: "RGCN"
+  decoder: "RGCN"
   weight_decay: 0.0001
   eva_lr: 0.01
   eva_wd: 0.0001

@@ -29,8 +29,8 @@ heterogeneous_dataset = {
     #         ("paper", "pa", "author"),
     #     ],
     # },
-    "heco_dblp": {
-        "name": DBLPHeCoDataset,
+    "heco_acm": {
+        "name": ACMHeCoDataset,
     },
     "heco_freebase": {
         "name": FreebaseHeCoDataset,
@@ -52,8 +52,8 @@ heterogeneous_dataset = {
     },
 }
 
-dataset = "PubMed"
-data = heterogeneous_dataset[dataset]["name"](reverse_edge=True)
+dataset = "heco_acm"
+data = heterogeneous_dataset[dataset]["name"](reverse_edge=True, use_feat="origin", device=0)
 graph = data[0]
 relations = data.relations
 target_type = data.predict_ntype
@@ -76,6 +76,11 @@ print(num_row, num_col)
 fig, axs = plt.subplots(num_row, num_col, figsize=(30, 15))
 print(pivots)
 print(target_relations)
+# Ensure axs is always a 2D array
+if num_row == 1:
+    axs = axs[np.newaxis, :]  # Convert to 2D array if only one row
+if num_col == 1:
+    axs = axs[:, np.newaxis]  # Convert to 2D array if only one column
 for i, p in enumerate(pivots):
     if i == pivots.shape[0] - 1:
         break
@@ -101,4 +106,4 @@ for i, p in enumerate(pivots):
 
     axs[row, col].set_title(f"neighbor {v} degree in class {i}")
     axs[row, col].legend(nei_type)
-fig.savefig(f"analysis/{dataset}_neighbor_degree.png")
+fig.savefig(f"heco_acm/{dataset}_neighbor_degree.png")

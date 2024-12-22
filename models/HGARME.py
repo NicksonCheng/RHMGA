@@ -65,7 +65,7 @@ def module_selection(
     module_type: str,
     status: str,
     aggregator: str,
-    dataset:str,
+    dataset: str,
 ):
 
     return HGraphSAGE(
@@ -80,7 +80,7 @@ def module_selection(
         status=status,
         module_type=module_type,
         aggregator=aggregator,
-        dataset=dataset
+        dataset=dataset,
     )
 
 
@@ -111,16 +111,16 @@ class HGARME(nn.Module):
         self.aggregator = args.aggregator
         self.feat_mask = args.feat_mask
         self.edge_mask = args.edge_mask
-        self.dataset=args.dataset
+        self.dataset = args.dataset
         # encoder/decoder hidden dimension
-        non_heads_module=["GCN","RGCN","HGT"]
+        non_heads_module = ["GCN", "RGCN_homo", "RGCN_hetero", "HGT"]
         if self.encoder_type in non_heads_module:
             self.enc_dim = self.hidden_dim
-            self.enc_heads=1
+            self.enc_heads = 1
         else:
             self.enc_dim = self.hidden_dim // self.num_heads
             self.enc_heads = self.num_heads
-        
+
         self.dec_in_dim = self.hidden_dim  # enc_dim * enc_heads
         if self.encoder_type in non_heads_module:
             self.dec_hidden_dim = self.hidden_dim
@@ -144,7 +144,7 @@ class HGARME(nn.Module):
             module_type=self.encoder_type,
             status="encoder",
             aggregator=self.aggregator,
-            dataset=self.dataset
+            dataset=self.dataset,
         )
         # linear transformation from encoder to decoder
         self.initial_status_dim(relations=relations)
@@ -160,7 +160,7 @@ class HGARME(nn.Module):
             module_type=self.decoder_type,
             status="decoder",
             aggregator=self.aggregator,
-            dataset=self.dataset
+            dataset=self.dataset,
         )
         self.edge_decoder = MaskEdgeDecoder(self.dec_in_dim, 1)
         self.degree_decoder = DegreeDecoder(self.dec_in_dim, len(all_types))
@@ -441,7 +441,6 @@ class HGARME(nn.Module):
             # remask
             hidden_rep = self.encoder_to_decoder(enc_rep)
             hidden_rep[mask_nodes] = 0.0
-
 
             dec_rep, att_sc = self.decoder(subgs, 1, relations, use_ntype, hidden_rep, src_x, "decoder")
 

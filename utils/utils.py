@@ -76,9 +76,10 @@ def visualization(dataset, embs, labels, log_times, epoch, display=False):
             indices = [i for i, lbl in enumerate(labels) if lbl == label]
             plt.scatter(embs_2d[indices, 0], embs_2d[indices, 1], color=colors[label], label=f"Class {label}", alpha=0.6)
 
-        plt.title("t-SNE visualization of node embeddings with class labels")
+        # plt.title("t-SNE visualization of node embeddings with class labels")
         plt.xlabel("x t-SNE vector")
         plt.ylabel("y t-SNE vector")
+        plt.axis("off")
         plt.legend()
         plt.savefig(f"{dataset}({epoch})_{log_times}.png")
     embs_2d = torch.tensor(embs_2d)
@@ -98,8 +99,6 @@ def save_best_performance(model, best_performance, metrics_mean, task, dataset, 
             for ratio in metrics_mean.keys():
                 for metric, value in metrics_mean[ratio].items():
                     best_performance[ratio][metric] = value
-            if save_model:
-                torch.save(model.state_dict(), f"analysis/{dataset}/best_{task}_{log_time}.pth")
     else:
         for metric, value in metrics_mean.items():
             total += value
@@ -108,8 +107,8 @@ def save_best_performance(model, best_performance, metrics_mean, task, dataset, 
             best_performance["epoch"] = best_epoch
             for metric, value in metrics_mean.items():
                 best_performance[metric] = value
-            if save_model:
-                save_path=f"analysis/{dataset}"
-                if(not os.path.exists(save_path)):
-                    os.mkdir(save_path)
-                torch.save(model.state_dict(), f"analysis/{dataset}/best_{task}_{log_time}.pth")
+    if save_model:
+        save_path = f"analysis/{dataset}"
+        if not os.path.exists(save_path):
+            os.mkdir(save_path)
+        torch.save(model.state_dict(), f"analysis/{dataset}/best_{task}_{log_time}.pth")

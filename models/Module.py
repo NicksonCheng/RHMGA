@@ -10,7 +10,7 @@ ntypes = {
     "heco_acm": ["paper", "author", "subject"],
     "heco_aminer": ["paper", "author", "reference"],
     "heco_freebase": ["movie", "author", "director", "writer"],
-    "PubMed": ["Disease", "Geng", "Chemical", "Species"],
+    "PubMed": ["Disease", "Gene", "Chemical", "Species"],
 }
 
 
@@ -94,8 +94,10 @@ class Module(nn.Module):
             activation=F.elu,
             allow_zero_in_degree=True,
         )
-        # self.rgcn_layer = RelGraphConv(in_dim,out_dim,len(self.relations), regularizer='basis', num_bases=2)
-        self.rgcn_layer = RelGraphConvHetero(in_dim=in_dim, out_dim=out_dim, rel_names=relations)
+        if dataset == "heco_aminer" or dataset == "heco_freebase":
+            self.rgcn_layer = RelGraphConv(in_dim, out_dim, len(self.relations), regularizer="basis", num_bases=2)
+        else:
+            self.rgcn_layer = RelGraphConvHetero(in_dim=in_dim, out_dim=out_dim, rel_names=relations)
         self.hgt_layer = HGT(
             in_dims={ntype: in_dim for ntype in ntypes},
             hidden_dim=out_dim,
@@ -107,44 +109,42 @@ class Module(nn.Module):
         )
 
     def mask_edges_func(self, g: DGLGraph, mask_rate: float = 0.3):
-        # src_nodes, dst_nodes = rels_subg.edges()
-        # in_degrees = rels_subg.in_degrees()
-
-        # non_zero_in_degrees = torch.nonzero(in_degrees > 1).squeeze()
-        # target_edges_indices = []
-
-        # for nz_dst_node in non_zero_in_degrees:
-        #     target_edges_indices.extend(torch.nonzero(dst_nodes == nz_dst_node).squeeze().tolist())
-        # ## edge indices of non_zero in_degree dst node
-        # target_edges_indices = torch.tensor(target_edges_indices).to(rels_subg.device)
 
         # num_edges = target_edges_indices.shape[0]
         if g.is_homogeneous:
             num_edges = g.num_edges()
             permutation = torch.randperm(num_edges).to(g.device)
             num_mask_edges = int(mask_rate * num_edges)
-            mask_edges = permutation[:num_mask_edges]
-            g.remove_edges(mask_edges)
-            return g
+            mask_edges_indices = permutation[:num_mask_edges]
+            g.remove_edges(mask_edges_indices)
+            return g, mask_edges_indices
         for etype in g.canonical_etypes:
             num_edges = g.num_edges(etype)
             permutation = torch.randperm(num_edges).to(g.device)
             num_mask_edges = int(mask_rate * num_edges)
             if num_mask_edges == 0:
                 continue
-            mask_edges = permutation[:num_mask_edges]
+            mask_edges_indices = permutation[:num_mask_edges]
             keep_edges = permutation[num_mask_edges:]
 
             # remove_indices = target_edges_indices[mask_edges]
-            g.remove_edges(mask_edges, etype=etype)
+            g.remove_edges(mask_edges_indices, etype=etype)
         return g
 
     def forward(self, block, dst_ntype, dst_feat, src_feats, curr_mask_rate):
-        hetero_module = ["RGCN", "HGT"]
+        hetero_module = ["RGCN_hetero", "HGT"]
         dst_rels = [rel_tuple for rel_tuple in self.relations if dst_ntype == rel_tuple[2]]
         if self.module_name in hetero_module:
             ## change block to heterograph
-            feats = {**src_feats, dst_ntype: dst_feat}
+            ## change block to heterograph
+            homo_etype = f"{dst_ntype}-{dst_ntype}"
+            dst_feat_ids = block.dstnodes(dst_ntype)
+            feats = {**src_feats}
+
+            ## species-species edge will be zero
+            if self.dataset != "PubMed" or block.num_edges(homo_etype) == 0:
+
+                feats[dst_ntype] = dst_feat
             edge_dict = {}
             for rel_type in dst_rels:
                 src, dst = block.edges(etype=rel_type)
@@ -154,13 +154,12 @@ class Module(nn.Module):
             for ntype in g_hetero.ntypes:
                 ntype_indices = torch.unique(g_hetero.nodes(ntype)).tolist()
                 feats[ntype] = feats[ntype][ntype_indices]
-            if self.module_name == "RGCN":
-                # z=self.rgcn_layer(g_homogeneous,combined_feats,combined_etype)
+            if self.module_name == "RGCN_v2":
                 z = self.rgcn_layer(g_hetero, feats)
 
             elif self.module_name == "HGT":
                 z = self.hgt_layer(g_hetero, feats)
-            z = z[dst_ntype]
+            z = z[dst_ntype][dst_feat_ids]
             att_sc = torch.ones(len(dst_rels))
             return z, att_sc
         ## homogeneous graph block
@@ -193,13 +192,18 @@ class Module(nn.Module):
         # Create a homogeneous graph for the current layer
         g_homogeneous = dgl.graph((combined_src, combined_dst))
         g_homogeneous.ndata["feat"] = combined_feats
-        g_homogeneous = self.mask_edges_func(g_homogeneous, curr_mask_rate)
+        g_homogeneous, mask_edges_indices = self.mask_edges_func(g_homogeneous, curr_mask_rate)
 
+        mask = torch.ones(combined_etype.size(0), dtype=torch.bool)
+        mask[mask_edges_indices] = False
+        combined_etype = combined_etype[mask]
         # Apply the corresponding GAT layer
         if self.module_name == "GAT":
             z = self.gat_layers(g_homogeneous, combined_feats).flatten(1)
         elif self.module_name == "GCN":
             z = self.gcn_layers(g_homogeneous, combined_feats)
+        elif self.module_name == "RGCN_homo":
+            z = self.rgcn_layer(g_homogeneous, combined_feats, combined_etype)
         dst_z = z[:num_dst]
         att_sc = torch.ones(len(dst_rels))
         # print(dst_z.shape)

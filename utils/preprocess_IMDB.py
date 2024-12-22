@@ -1,174 +1,141 @@
-import itertools
 import os
+import shutil
+import zipfile
 
 import dgl
-import dgl.function as fn
 import numpy as np
 import pandas as pd
-import scipy.io as sio
+import scipy.sparse as sp
 import torch
 from dgl.data import DGLDataset
 from dgl.data.utils import (
     download,
     save_graphs,
+    save_info,
     load_graphs,
+    load_info,
     generate_mask_tensor,
     idx2mask,
 )
-from sklearn.feature_extraction.text import CountVectorizer
-from sklearn.model_selection import train_test_split
+from dgl.nn.pytorch import MetaPath2Vec
+from utils.evaluate import metapath2vec_train
 
 
 class IMDbDataset(DGLDataset):
-    """IMDb电影数据集，只有一个异构图
 
-    统计数据
-    -----
-    * 顶点：4278 movie, 5257 actor, 2081 director
-    * 边：12828 movie-actor, 4278 movie-director
-    * 类别数：3
-    * movie顶点划分：400 train, 400 valid, 3478 test
-
-    属性
-    -----
-    * num_classes: 类别数
-    * metapaths: 使用的元路径
-    * predict_ntype: 预测顶点类型
-
-    movie顶点属性
-    -----
-    * feat: tensor(4278, 1299) 剧情关键词的词袋表示
-    * label: tensor(4278) 0: Action, 1: Comedy, 2: Drama
-    * train_mask, val_mask, test_mask: tensor(4278)
-
-    actor顶点属性
-    -----
-    * feat: tensor(5257, 1299) 关联的电影特征的平均
-
-    director顶点属性
-    -----
-    * feat: tensor(2081, 1299) 关联的电影特征的平均
-    """
-
-    _url = "https://raw.githubusercontent.com/Jhy1993/HAN/master/data/imdb/movie_metadata.csv"
-    _seed = 42
-
-    def __init__(self, reverse_edge):
-        self._relaitons = [("movie", "ma", "actor"), ("actor", "am", "movie"), ("movie", "md", "director"), ("director", "dm", "movie")]
-        super().__init__("imdb", self._url)
-
-    def download(self):
-        file_path = os.path.join(self.raw_dir, "imdb.csv")
-        if not os.path.exists(file_path):
-            download(self.url, path=file_path)
-
+    def __init__(self, reverse_edge: bool, use_feat: str, device: int):
+        self._ntypes={"m":"movie","a":"actor","d":"director","k":"keywords"}
+        self._relations = [
+         ("movie", "movie-actor", "actor"),
+         ("actor", "actor-movie", "movie"), 
+         ("movie", "movie-director", "director"), 
+         ("director", "director-movie", "movie"),
+         ("movie", "movie-keywords", "keywords"), 
+         ("keywords", "keywords-movie", "movie")]
+        self.use_feat= use_feat
+        self.device=device
+        self.data_path = "../data/HeCo/imdb"
+        self.g_name=f"imdb_dgl_graph_{self.use_feat}.bin"
+        super().__init__("imdb","../data/HeCo")
     def save(self):
-        save_graphs(os.path.join(self.save_path, self.name + "_dgl_graph.bin"), [self.g])
-        pass
-
+        save_graphs(os.path.join(self.data_path, self.g_name), [self.g])
     def load(self):
-
-        graphs, _ = load_graphs(os.path.join(self.save_path, self.name + "_dgl_graph.bin"))
+        print(f"load: {self.data_path}/imdb_dgl_graph{self.use_feat}.bin")
+        graphs, _ = load_graphs(os.path.join(self.data_path, self.g_name))
         self.g = graphs[0]
-        for k in ("train_mask", "val_mask", "test_mask"):
-            self.g.nodes["movie"].data[k] = self.g.nodes["movie"].data[k].bool()
+        ntype = self.predict_ntype
+        self._num_classes = self.g.nodes[ntype].data["label"].max().item() + 1
+        for split in ("train", "val", "test"):
+            for ratio in self.label_ratio:
+                k = f"{split}_{ratio}"
+                self.g.nodes[ntype].data[k] = self.g.nodes[ntype].data[k].bool()
 
     def process(self):
-        self.data = (
-            pd.read_csv(os.path.join(self.raw_dir, "imdb.csv"), encoding="utf8")
-            .dropna(axis=0, subset=["actor_1_name", "director_name"])
-            .reset_index(drop=True)
-        )
-        self.labels = self._extract_labels()
-        self.movies = list(sorted(m.strip() for m in self.data["movie_title"]))
-        self.directors = list(sorted(set(self.data["director_name"])))
-        self.actors = list(
-            sorted(set(itertools.chain.from_iterable(self.data[c].dropna().to_list() for c in ("actor_1_name", "actor_2_name", "actor_3_name"))))
-        )
-        self.g = self._build_graph()
-        self._add_ndata()
+        print("process")
 
-    def _extract_labels(self):
-        """提取电影类型作为标签，并删除其他类型的电影。"""
-        labels = np.full(len(self.data), -1)
-        for i, genres in self.data["genres"].items():
-            for genre in genres.split("|"):
-                if genre == "Action":
-                    labels[i] = 0
-                    break
-                elif genre == "Comedy":
-                    labels[i] = 1
-                    break
-                elif genre == "Drama":
-                    labels[i] = 2
-                    break
-        other_idx = np.where(labels == -1)[0]
-        self.data = self.data.drop(other_idx).reset_index(drop=True)
-        return np.delete(labels, other_idx, axis=0)
+        self._read_edges()
+        origin_feats = self._read_feats()
+        if self.use_feat != "origin":
+            meta2vec_feat = self._read_meta2vec_feat()
+        for ntype, feat in origin_feats.items():
+            if self.use_feat == "origin":
+                self.g.nodes[ntype].data["feat"] = feat
+            elif self.use_feat == "meta2vec":
+                self.g.nodes[ntype].data["feat"] = meta2vec_feat[ntype]
+            else:
+                self.g.nodes[ntype].data["feat"] = torch.hstack([feat, meta2vec_feat[ntype]])
 
-    def _build_graph(self):
-        ma, md = set(), set()
-        for m, row in self.data.iterrows():
-            d = self.directors.index(row["director_name"])
-            md.add((m, d))
-            for c in ("actor_1_name", "actor_2_name", "actor_3_name"):
-                if row[c] in self.actors:
-                    a = self.actors.index(row[c])
-                    ma.add((m, a))
-        ma, md = list(ma), list(md)
-        ma_m, ma_a = [e[0] for e in ma], [e[1] for e in ma]
-        md_m, md_d = [e[0] for e in md], [e[1] for e in md]
-        return dgl.heterograph(
-            {
-                ("movie", "ma", "actor"): (ma_m, ma_a),
-                ("actor", "am", "movie"): (ma_a, ma_m),
-                ("movie", "md", "director"): (md_m, md_d),
-                ("director", "dm", "movie"): (md_d, md_m),
-            }
-        )
+        labels = torch.from_numpy(np.load(os.path.join(self.data_path, "labels.npy"))).long()
+        labels=labels-1
+        self._num_classes = labels.max().item() + 1
+        self.g.nodes[self.predict_ntype].data["label"] = labels
+        n = self.g.num_nodes(self.predict_ntype)
 
-    def split_idx(self, samples, train_size, val_size, random_state=None):
-        """将samples划分为训练集、测试集和验证集，需满足（用浮点数表示）：
+        self.masked_graph = {}
+        for split in ("train", "val", "test"):
+            if split not in self.masked_graph:
+                self.masked_graph[split] = {}
+            for ratio in self.label_ratio:
+                idx = np.load(os.path.join(self.data_path, f"{split}_{ratio}.npy"))
+                mask = generate_mask_tensor(idx2mask(idx, n))
 
-        * 0 < train_size < 1
-        * 0 < val_size < 1
-        * train_size + val_size < 1
+                self.g.nodes[self.predict_ntype].data[f"{split}_{ratio}"] = mask
 
-        :param samples: list/ndarray/tensor 样本集
-        :param train_size: int or float 如果是整数则表示训练样本的绝对个数，否则表示训练样本占所有样本的比例
-        :param val_size: int or float 如果是整数则表示验证样本的绝对个数，否则表示验证样本占所有样本的比例
-        :param random_state: int, optional 随机数种子
-        :return: (train, val, test) 类型与samples相同
-        """
-        train, val = train_test_split(samples, train_size=train_size, random_state=random_state)
-        if isinstance(val_size, float):
-            val_size *= len(samples) / len(val)
-        val, test = train_test_split(val, train_size=val_size, random_state=random_state)
-        return train, val, test
+    def _read_edges(self):
+        edges = {}
+        for file in os.listdir(self.data_path):
+            name, ext = os.path.splitext(file)
 
-    def _add_ndata(self):
-        vectorizer = CountVectorizer(min_df=5)
-        features = vectorizer.fit_transform(self.data["plot_keywords"].fillna("").values)
-        self.g.nodes["movie"].data["feat"] = torch.from_numpy(features.toarray()).float()
-        self.g.nodes["movie"].data["label"] = torch.from_numpy(self.labels).long()
+            if ext == ".txt":
+                u, v = name
+                e = pd.read_csv(os.path.join(self.data_path, f"{u}{v}.txt"), sep=" ", names=[u, v])
+                src = e[u].to_list()
+                dst = e[v].to_list()
+                src_name, dst_name = self._ntypes[u], self._ntypes[v]
+                edges[(src_name, f"{src_name}-{dst_name}", dst_name)] = (src, dst)
+                edges[(dst_name, f"{dst_name}-{src_name}", src_name)] = (dst, src)
+        self.g = dgl.heterograph(edges)
 
-        # actor和director顶点的特征为其关联的movie顶点特征的平均
-        self.g.multi_update_all(
-            {
-                "ma": (fn.copy_u("feat", "m"), fn.mean("m", "feat")),
-                "md": (fn.copy_u("feat", "m"), fn.mean("m", "feat")),
-            },
-            "sum",
-        )
+        for ntype in self._ntypes.values():
+            ntype_num_nodes = self.g.num_nodes(ntype)
+            ntype_nei_degree = {ntype: torch.zeros(ntype_num_nodes) for ntype in self._ntypes.values()}
+            use_relations = [rel_tuple for rel_tuple in self._relations if rel_tuple[2] == ntype]
+            for rel_tuple in use_relations:
+                src, rel, dst = rel_tuple
+                ntype_nei_degree[src] = self.g.in_degrees(torch.arange(ntype_num_nodes), etype=rel)
+            self.g.nodes[ntype].data["in_degree"] = torch.stack([ntype_nei_degree[ntype] for ntype in self._ntypes.values()], dim=1)
+            # print(self.g.nodes[ntype].data["in_degree"].shape)
 
-        n_movies = len(self.movies)
-        train_idx, val_idx, test_idx = self.split_idx(np.arange(n_movies), 400, 400, self._seed)
-        self.g.nodes["movie"].data["train"] = generate_mask_tensor(idx2mask(train_idx, n_movies))
-        self.g.nodes["movie"].data["val"] = generate_mask_tensor(idx2mask(val_idx, n_movies))
-        self.g.nodes["movie"].data["test"] = generate_mask_tensor(idx2mask(test_idx, n_movies))
+    def _read_feats(self):
+        feats = {}
+        for u in self._ntypes:
+            file = os.path.join(self.data_path, f"{u}_feat.npz")
+            ntype = self._ntypes[u]
+            if os.path.exists(file):
+                feats[ntype] = torch.from_numpy(sp.load_npz(file).toarray()).float()
+            else:
+                num_t = self.g.num_nodes(ntype)
+                feats[ntype] = torch.from_numpy(sp.eye(num_t).toarray()).float()
+        return feats
+
+    def _read_meta2vec_feat(self):
+        ## add metapath2vec feature
+        ntype_feats = {}
+        for ntype, metapath in self.metapaths.items():
+            wd_size = len(metapath) + 1
+            metapath_model = MetaPath2Vec(self.g, metapath, wd_size, 512, 3, True)
+            metapath2vec_train(self.g, ntype, metapath_model, 50, self.device)
+
+            user_nids = torch.LongTensor(metapath_model.local_to_global_nid[ntype]).to(self.device)
+            mp2vec_emb = metapath_model.node_embed(user_nids).detach().cpu()
+            ntype_feats[ntype] = mp2vec_emb
+            del metapath_model
+            torch.cuda.empty_cache()
+        return ntype_feats
 
     def has_cache(self):
-        return os.path.exists(os.path.join(self.save_path, self.name + "_dgl_graph.bin"))
+        # return False
+        return os.path.exists(os.path.join(self.data_path, self.g_name))
 
     def __getitem__(self, idx):
         if idx != 0:
@@ -180,106 +147,33 @@ class IMDbDataset(DGLDataset):
 
     @property
     def num_classes(self):
-        return 3
-
-    @property
-    def metapaths(self):
-        return [["ma", "am"], ["md", "dm"]]
-
+        return self._num_classes
     @property
     def predict_ntype(self):
         return "movie"
+    @property
+    def relations(self):
+        return self._relations
+    @property
+    def metapaths(self):
+        raise NotImplementedError
 
     @property
-    def _ntypes(self):
+    def evalution_graph(self):
+        return self.masked_graph
 
-        return {"m": "movie", "a": "actor", "d": "director"}
+    @property
+    def pos(self):
+        return self.pos_i, self.pos_j
 
     @property
     def has_label_ratio(self):
-        return False
+        return True
 
     @property
     def multilabel(self):
         return False
 
     @property
-    def relations(self):
-        return self._relaitons
-
-
-class IMDb5kDataset(DGLDataset):
-    """HAN作者处理的ACM数据集：https://github.com/Jhy1993/HAN
-
-    只有一个样本，包括movie顶点基于MAM和MDM两个元路径的邻居组成的同构图
-
-    >>> data = IMDb5kDataset()
-    >>> mam_g, mdm_g = data[0]
-
-    统计数据
-    -----
-    * mam_g: 4780个顶点，98010条边
-    * mdm_g: 4780个顶点，21018条边
-    * 类别数：3
-    * 划分：300 train, 300 valid, 2687 test
-
-    顶点属性
-    -----
-    * feat: tensor(4780, 1232)
-    * label: tensor(4780)，-1表示无标签
-    * train_mask, val_mask, test_mask: tensor(4780)
-    """
-
-    def __init__(self):
-        super().__init__("imdb5k", "https://pan.baidu.com/s/199LoAr5WmL3wgx66j-qwaw")
-
-    def download(self):
-        file_path = os.path.join(self.raw_dir, "imdb5k.mat")
-        if not os.path.exists(file_path):
-            raise FileNotFoundError("请手动下载文件 {} 提取码：qkec 并保存为 {}".format(self.url, file_path))
-
-    def save(self):
-        save_graphs(os.path.join(self.save_path, self.name + "_dgl_graph.bin"), self.gs)
-
-    def load(self):
-        self.gs, _ = load_graphs(os.path.join(self.save_path, self.name + "_dgl_graph.bin"))
-        for g in self.gs:
-            for k in ("train_mask", "val_mask", "test_mask"):
-                g.ndata[k] = g.ndata[k].bool()
-
-    def process(self):
-        data = sio.loadmat(os.path.join(self.raw_dir, "imdb5k.mat"))
-        mam_g = dgl.graph(data["MAM"].nonzero())
-        mdm_g = dgl.graph(data["MDM"].nonzero())
-        # mym_g = dgl.graph(data['MYM'].nonzero())
-        self.gs = [mam_g, mdm_g]
-
-        features = torch.from_numpy(data["feature"]).float()
-        num_nodes = features.shape[0]
-        labels = torch.full((num_nodes,), -1, dtype=torch.long)
-        idx, label = data["label"].nonzero()
-        labels[idx] = torch.from_numpy(label)
-        train_mask = generate_mask_tensor(idx2mask(data["train_idx"][0], num_nodes))
-        val_mask = generate_mask_tensor(idx2mask(data["val_idx"][0], num_nodes))
-        test_mask = generate_mask_tensor(idx2mask(data["test_idx"][0], num_nodes))
-        for g in self.gs:
-            g.ndata["feat"] = features
-            g.ndata["label"] = labels
-            g.ndata["train_mask"] = train_mask
-            g.ndata["val_mask"] = val_mask
-            g.ndata["test_mask"] = test_mask
-
-    def has_cache(self):
-        return os.path.exists(os.path.join(self.save_path, self.name + "_dgl_graph.bin"))
-
-    def __getitem__(self, idx):
-        if idx != 0:
-            raise IndexError("This dataset has only one graph")
-        return self.gs
-
-    def __len__(self):
-        return 1
-
-    @property
-    def num_classes(self):
-        return 3
+    def label_ratio(self):
+        return ["20", "40", "60"]
