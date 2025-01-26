@@ -252,8 +252,12 @@ class ACMHeCoDataset(HeCoDataset):
 
     @property
     def metapaths(self):
-        return [["pa", "ap"], ["ps", "sp"]]
-
+        return {
+            "paper":[["paper-author", "author-paper"], ["paper-subject", "subject-paper"]],
+            "author":[["author-paper", "paper-author"]],
+            "subject":[["subject-paper", "paper-subject"]],
+            
+        }
     @property
     def predict_ntype(self):
         return "paper"
@@ -363,7 +367,7 @@ class FreebaseHeCoDataset(HeCoDataset):
     @property
     def metapaths(self):
         return {
-            "movie": ["movie-author", "author-movie", "movie-director", "director-movie", "movie-writer", "writer-movie"],
+            "movie": [["movie-author", "author-movie"], ["movie-director", "director-movie"], ["movie-writer", "writer-movie"]],
             "author": ["author-movie", "movie-author"],
             "director": ["director-movie", "movie-director"],
             "writer": ["writer-movie", "movie-writer"],
@@ -415,7 +419,7 @@ class AMinerHeCoDataset(HeCoDataset):
     @property
     def metapaths(self):
         return {
-            "paper": ["paper-author", "author-paper", "paper-reference", "reference-paper"],
+            "paper": [["paper-author", "author-paper"], ["paper-reference", "reference-paper"]],
             "author": ["author-paper", "paper-author"],
             "reference": ["reference-paper", "paper-reference"],
         }

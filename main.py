@@ -366,7 +366,7 @@ def train(rank=None, world_size=None, args=None):
                                 enc_feat = enc_feat[labeled_indices]
                                 target_type_labels = target_type_labels[labeled_indices].squeeze()
                             cls_enc_emb = enc_feat if args.dataset != "heco_aminer" else emb_2d
-                            mean, std = node_clustering_evaluate(cls_enc_emb, target_type_labels, num_classes, 10)
+                            mean, std = node_clustering_evaluate(args.clus_algorithm,cls_enc_emb, target_type_labels, num_classes, 10)
 
                             save_best_performance(
                                 model, best_cls_performance, mean, "clustering", args.dataset, best_epoch, log_times, args.save_model
@@ -497,6 +497,7 @@ if __name__ == "__main__":
     parser.add_argument("--feat_mask", default=True, help="mask node feature or not")
     ## event controller
     parser.add_argument("--classifier", type=str, default="MLP", help="classifier for node classification")
+    parser.add_argument("--clus_algorithm", type=str, default="K-Means", help="clustering algorithm")
     parser.add_argument("--task", type=str, default="all", help="downstream task")
     parser.add_argument("--cls_visual", default=False, help="draw clustering visualization")
     parser.add_argument("--save_model", default=False, help="save best model or not")

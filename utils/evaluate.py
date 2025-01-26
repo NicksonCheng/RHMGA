@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from sklearn.metrics import f1_score, roc_auc_score
-from sklearn.cluster import KMeans
+from sklearn.cluster import KMeans, DBSCAN
 from sklearn.metrics.cluster import normalized_mutual_info_score, adjusted_rand_score
 from sklearn.model_selection import StratifiedKFold
 from sklearn.manifold import TSNE
@@ -14,8 +14,8 @@ from torch.optim import SparseAdam
 from torch.utils.data import DataLoader
 from sklearn.svm import LinearSVC
 from collections import Counter
-
-
+from sklearn_extra.cluster import KMedoids
+from xgboost import XGBClassifier
 class LogReg(nn.Module):
     def __init__(self, ft_in, nb_classes):
         super(LogReg, self).__init__()
@@ -97,12 +97,18 @@ def metapath2vec_train(graph, target_type, model, epoch, device):
     return model
 
 
-def node_clustering_evaluate(embeds, y, n_labels, training_time):
+def node_clustering_evaluate(algorithm,embeds, y, n_labels, training_time):
     nmi_list, ari_list = [], []
     embeds = embeds.cpu().numpy()
     y = y.cpu().detach().numpy()
-    for kmeans_random_state in range(training_time):
-        Y_pred = KMeans(n_clusters=n_labels, random_state=kmeans_random_state, n_init=10).fit(embeds).predict(embeds)
+    for random_state in range(training_time):
+        if algorithm == "kmeans":
+            _pred = KMeans(n_clusters=n_labels, random_state=random_state, n_init=10).fit(embeds).predict(embeds)
+        elif algorithm == "kmedoids":
+            # Use K-Medoids instead of K-Means
+            kmedoids = KMedoids(n_clusters=n_labels, random_state=random_state, init="random", max_iter=300)
+            Y_pred = kmedoids.fit_predict(embeds)
+
         nmi = normalized_mutual_info_score(y, Y_pred)
         ari = adjusted_rand_score(y, Y_pred)
         nmi_list.append(nmi)
@@ -115,6 +121,7 @@ def node_clustering_evaluate(embeds, y, n_labels, training_time):
         "nmi": np.std(nmi_list),
         "ari": np.std(ari_list),
     }
+    
     return mean, std
 
 
@@ -136,12 +143,62 @@ def node_classification_evaluate(device, enc_feat, args, num_classes, labels, ma
     micro_f1s = []
     macro_f1s = []
     auc_score_list = []
-    for _ in tqdm(range(training_time), position=0, desc=colorize("Evaluating", "green")):
+    for i in tqdm(range(training_time), position=0, desc=colorize("Evaluating", "green")):
 
         if args.classifier == "MLP":
             classifier = MLP(num_dim=enc_feat.shape[-1], num_classes=num_classes).to(device)
         elif args.classifier == "LR":
             classifier = LogReg(ft_in=args.num_hidden, nb_classes=num_classes).to(device)
+        elif args.classifier == "SVM":
+            classifier = LinearSVC(random_state=i, max_iter=3000, dual="auto")
+            classifier.fit(emb["train"].cpu(), labels["train"].cpu())
+            pred = classifier.predict(emb["test"].cpu())
+            test_labels=labels["test"].cpu()
+            acc = torch.eq(torch.tensor(pred), test_labels).sum().item() / len(pred)
+            pred_score = classifier.decision_function(emb["test"].cpu())
+            softmax_score = torch.softmax(torch.from_numpy(pred_score), dim=1).numpy()
+
+            macro_f1s.append(f1_score(test_labels, pred, average="macro"))
+            micro_f1s.append(f1_score(test_labels, pred, average="micro"))
+
+            auc_score_list.append(
+                roc_auc_score(
+                    y_true=test_labels,
+                    y_score=softmax_score,
+                    multi_class="ovr",
+                    average=None if multilabel else "macro",
+                )
+            )
+            continue
+        elif args.classifier == "XGBoost":
+            classifier = XGBClassifier(
+                objective="multi:softprob",
+                num_class=num_classes,
+                random_state=i,
+                eval_metric="mlogloss",
+                use_label_encoder=False,
+                verbosity=0
+            )
+            classifier.fit(emb["train"].cpu().numpy(), labels["train"].cpu().numpy())
+            pred = classifier.predict(emb["test"].cpu().numpy())
+            pred_proba = classifier.predict_proba(emb["test"].cpu().numpy())
+            test_labels = labels["test"].cpu().numpy()
+
+            acc = (pred == test_labels).sum() / len(pred)
+            accs.append(acc)
+
+            macro_f1s.append(f1_score(test_labels, pred, average="macro"))
+            micro_f1s.append(f1_score(test_labels, pred, average="micro"))
+
+            auc_score_list.append(
+                roc_auc_score(
+                    y_true=test_labels,
+                    y_score=pred_proba,
+                    multi_class="ovr",
+                    average=None if multilabel else "macro",
+                )
+            )
+            continue
         optimizer = optim.Adam(classifier.parameters(), lr=args.eva_lr, weight_decay=args.eva_wd)
         test_outputs_list = []
         val_macro = []

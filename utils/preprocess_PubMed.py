@@ -240,3 +240,14 @@ class PubMedDataset(DGLDataset):
     @property
     def multilabel(self):
         return False
+    
+    @property
+    def metapaths(self):
+        return {
+            "Disease": [
+                ["Disease-Disease","Disease-Disease"],
+                ["Disease-Chemical","Chemical-Disease"],
+                ["Disease-Gene","Gene-Disease"],
+                ["Disease-Species","Species-Disease"],
+            ],
+        }

@@ -154,7 +154,7 @@ class Module(nn.Module):
             for ntype in g_hetero.ntypes:
                 ntype_indices = torch.unique(g_hetero.nodes(ntype)).tolist()
                 feats[ntype] = feats[ntype][ntype_indices]
-            if self.module_name == "RGCN_v2":
+            if self.module_name == "RGCN_hetero":
                 z = self.rgcn_layer(g_hetero, feats)
 
             elif self.module_name == "HGT":
