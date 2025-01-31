@@ -101,14 +101,14 @@ def node_clustering_evaluate(algorithm,embeds, y, n_labels, training_time):
     nmi_list, ari_list = [], []
     embeds = embeds.cpu().numpy()
     y = y.cpu().detach().numpy()
+    print(algorithm)
     for random_state in range(training_time):
         if algorithm == "kmeans":
-            _pred = KMeans(n_clusters=n_labels, random_state=random_state, n_init=10).fit(embeds).predict(embeds)
+            Y_pred = KMeans(n_clusters=n_labels, random_state=random_state, n_init=10).fit(embeds).predict(embeds)
         elif algorithm == "kmedoids":
             # Use K-Medoids instead of K-Means
             kmedoids = KMedoids(n_clusters=n_labels, random_state=random_state, init="random", max_iter=300)
             Y_pred = kmedoids.fit_predict(embeds)
-
         nmi = normalized_mutual_info_score(y, Y_pred)
         ari = adjusted_rand_score(y, Y_pred)
         nmi_list.append(nmi)

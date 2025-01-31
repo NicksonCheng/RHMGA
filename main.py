@@ -22,14 +22,53 @@ from utils.preprocess_HeCo import (
 from utils.preprocess_IMDB import IMDbDataset
 from utils.preprocess_PubMed import PubMedDataset
 from utils.evaluate import LGS_node_classification_evaluate, node_classification_evaluate, node_clustering_evaluate, metapath2vec_train
-from utils.link_prediction import lp_evaluate
 from utils.utils import load_config, colorize, name_file, visualization, save_best_performance
 from models.HGARME import HGARME
 from tqdm import tqdm
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
+from torch_geometric.nn.models import MetaPath2Vec
 
+from hgmae.models.edcoder import PreModel
+from hgmae.utils import (
+    evaluate,
+    evaluate_cluster,
+    load_best_configs,
+    load_data,
+    metapath2vec_train,
+    preprocess_features,
+    set_random_seed,
+    LGS_node_classification_evaluate,
+)
+from types import SimpleNamespace
+datasets_args = {
+    "aminer": {
+        "type_num": [6564, 13329, 35890],
+        "nei_num": 2,
+        "n_labels": 4,
+    },
+    "freebase": {
+        "type_num": [3492, 2502, 33401, 4459],
+        "nei_num": 3,
+        "n_labels": 3,
+    },
+    "acm": {
+        "type_num": [4019, 7167, 60],
+        "nei_num": 2,
+        "n_labels": 3,
+    },
+    "Freebase": {
+        "type_num": [33782, 10773, 6990, 975, 14689, 6502, 2514, 3618],
+        "nei_num": 7,
+        "n_labels": 7,
+    },
+    "PubMed": {
+        "type_num": [13561, 20163, 26522, 2863],
+        "nei_num": 3,
+        "n_labels": 8,
+    },
+}
 heterogeneous_dataset = {
     "heco_acm": {
         "name": ACMHeCoDataset,
@@ -65,46 +104,122 @@ def signal_handler(signal, frame):
     sys.exit(0)
 
 
-def node_importance(graph):
-    split_idx = [feat.shape[0] for feat in graph.ndata["feat"].values()]
-    nx_g = dgl.to_networkx(graph, node_attrs=["feat"])
-    ntype_node = nx_g.nodes(data=True)
-    num_nodes = graph.num_nodes()
-
-    degree_centrality = nx.degree_centrality(nx_g)
-    betweenness_centrality = nx.betweenness_centrality(nx_g)
-    closeness_centrality = nx.closeness_centrality(nx_g)
-    # eigen_centrality = nx.eigenvector_centrality(nx_g)
-    pagerank = nx.pagerank(nx_g)
-
-    nodes_score = {
-        "degree_centrality": torch.tensor([degree_centrality.get(i, None) for i in range(num_nodes)]),
-        "betweenness_centrality": torch.tensor([betweenness_centrality.get(i, None) for i in range(num_nodes)]),
-        "closeness_centrality": torch.tensor([closeness_centrality.get(i, None) for i in range(num_nodes)]),
-        # "eigen_centrality": torch.tensor([eigen_centrality.get(i, None) for i in range(num_nodes)]),
-        "pagerank": torch.tensor([pagerank.get(i, None) for i in range(num_nodes)]),
-    }
-    nodes_score["importance"] = sum(nodes_score.values())
-    ntype_score = {
-        "degree_centrality": {},
-        "betweenness_centrality": {},
-        "closeness_centrality": {},
-        # "eigen_centrality": {},
-        "pagerank": {},
-        "importance": {},
-    }
-
-    curr_idx = 0
-    for i, ntype in enumerate(graph.ndata["feat"].keys()):
-        for score_name in ntype_score.keys():
-            ntype_score[score_name][ntype] = nodes_score[score_name][curr_idx : curr_idx + split_idx[i]]
-        curr_idx += split_idx[i]
-    torch.save(ntype_score, "freebase_score.pth")
-    return 0
 
 
 def train(rank=None, world_size=None, args=None):
 
+    ## handle HGMAE
+    HGMAE_args = SimpleNamespace(**{
+        "dataset":"acm",
+        "activation": "prelu",
+        "alpha_l": 1,
+        "attn_drop": 0.5,
+        "dataset": "acm",
+        "decoder": "han",
+        "encoder": "han",
+        "eva_lr": 0.01,
+        "eva_wd": 0.0005,
+        "feat_drop": 0.2,
+        "feat_mask_rate": "0.5,0.005,0.8",
+        "gpu": 0,
+        "hidden_dim": 1024,
+        "l2_coef": 0,
+        "leave_unchanged": 0.3,
+        "loss_fn": "sce",
+        "lr": 0.0008,
+        "mae_epochs": 10000,
+        "mask_rate": 0.4,
+        "mp2vec_feat_alpha_l": 2,
+        "mp2vec_feat_drop": 0.2,
+        "mp2vec_feat_pred_loss_weight": 0.1,
+        "mp_edge_alpha_l": 3,
+        "mp_edge_mask_rate": 0.7,
+        "mp_edge_recon_loss_weight": 1,
+        "mps_batch_size": 256,
+        "mps_context_size": 3,
+        "mps_embedding_dim": 64,
+        "mps_epoch": 20,
+        "mps_lr": 0.001,
+        "mps_num_negative_samples": 3,
+        "mps_walk_length": 10,
+        "mps_walks_per_node": 3,
+        "n_labels": 3,
+        "negative_slope": 0.2,
+        "nei_num": 2,
+        "norm": "batchnorm",
+        "num_heads": 4,
+        "num_layers": 2,
+        "num_out_heads": 1,
+        "optimizer": "adam",
+        "patience": 10,
+        "replace_rate": 0.2,
+        "residual": False,
+        "scheduler": True,
+        "scheduler_gamma": 0.999,
+        "use_mp2vec_feat_pred": True,
+        "use_mp_edge_recon": True,
+
+    })
+    device = torch.device(f"cuda:{args.devices}" if torch.cuda.is_available() else "cpu")
+    setattr(HGMAE_args,"device",device)
+    set_random_seed(0)
+    type_num=datasets_args[HGMAE_args.dataset]["type_num"]
+    setattr(HGMAE_args,"type_num",type_num)
+    if HGMAE_args.dataset == "PubMed" or HGMAE_args.dataset == "Freebase":
+        (nei_index, feats, mps, pos, label, label_indices), g, processed_metapaths = load_data(HGMAE_args.dataset, [20, 40, 60], type_num)
+    else:
+        (nei_index, feats, mps, pos, label, idx_train, idx_val, idx_test), g, processed_metapaths = load_data(HGMAE_args.dataset, [20, 40, 60],type_num)
+    nb_classes = label.shape[-1]
+
+    feats_dim_list = [i.shape[1] for i in feats]
+    num_mp = int(len(mps))
+
+    print("Dataset: ", HGMAE_args.dataset)
+    print("The number of meta-paths: ", num_mp)
+    for meta_name, metapath in g.edge_index_dict.items():
+        print(meta_name, metapath.shape)
+    if True:
+        assert HGMAE_args.mps_embedding_dim > 0
+        metapath_model = MetaPath2Vec(
+            g.edge_index_dict,
+            HGMAE_args.mps_embedding_dim,
+            processed_metapaths,
+            HGMAE_args.mps_walk_length,
+            HGMAE_args.mps_context_size,
+            HGMAE_args.mps_walks_per_node,
+            HGMAE_args.mps_num_negative_samples,
+            sparse=True,
+        )
+        metapath2vec_train(HGMAE_args, metapath_model, HGMAE_args.mps_epoch, HGMAE_args.device)
+        mp2vec_feat = metapath_model("target").detach()
+        # metapath2vec_train(HGMAE_args, metapath_model, 1, HGMAE_args.device)
+
+        # mp2vec_feat = torch.zeros(feats[0].shape[0], HGMAE_args.mps_embedding_dim)
+        # visit_feat = metapath_model("target").detach()
+
+        # if HGMAE_args.dataset == "PubMed":
+        #     print(visit_feat)
+        #     visit_idx = metapath_model.node_idx["target"]
+        #     mp2vec_feat[visit_idx] = visit_feat
+
+        # free up memory
+        del metapath_model
+        mp2vec_feat = mp2vec_feat.cpu()
+        torch.cuda.empty_cache()
+        mp2vec_feat = torch.FloatTensor(preprocess_features(mp2vec_feat))
+        feats[0] = torch.hstack([feats[0], mp2vec_feat])
+
+    # model
+    focused_feature_dim = feats_dim_list[0]
+    HGMAE_model = PreModel(HGMAE_args, num_mp, focused_feature_dim)
+    HGMAE_model.to(HGMAE_args.device)
+    HGMAE_feats = [feat.to(HGMAE_args.device) for feat in feats]
+    mps = [mp.to(HGMAE_args.device) for mp in mps]
+    HGMAE_label = label.to(HGMAE_args.device)
+    if HGMAE_args.dataset != "PubMed" and HGMAE_args.dataset != "Freebase":
+        idx_train = [i.to(HGMAE_args.device) for i in idx_train]
+        idx_val = [i.to(HGMAE_args.device) for i in idx_val]
+        idx_test = [i.to(HGMAE_args.device) for i in idx_test]
     # device setting and loading dataset
     start_t = time.time()
     if args.parallel:
@@ -116,16 +231,12 @@ def train(rank=None, world_size=None, args=None):
     data = heterogeneous_dataset[args.dataset]["name"](args.reverse_edge, args.use_feat, args.devices)
     print("Preprocessing Time taken:", time.time() - start_t, "seconds")
     start_t = time.time()
-
     relations = data.relations
     graph = data[0]
     all_types = list(data._ntypes.values())
     target_type = data.predict_ntype
     num_classes = data.num_classes
     train_nids = {ntype: torch.arange(graph.num_nodes(ntype)) for ntype in all_types}
-    # for ntype, feat in graph.ndata["feat"].items():
-    #     num_nodes = graph.num_nodes(ntype)
-    #     graph.nodes[ntype].data["onehot_feat"] = torch.from_numpy(sp.eye(num_nodes).toarray()).float()
     masked_graph = {}
     if data.has_label_ratio:
         for ratio in data.label_ratio:
@@ -164,7 +275,17 @@ def train(rank=None, world_size=None, args=None):
         model = DDP(model, device_ids=[rank], find_unused_parameters=True)
     else:
         model = model.to(device_0)
-    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+
+    # Define learnable weights
+    HGMAE_weight = torch.nn.Parameter(torch.tensor(0.5, device=device_0, requires_grad=True))
+    RHMGA_weight = torch.nn.Parameter(torch.tensor(0.5, device=device_0, requires_grad=True))
+    # Add weights to optimizer
+    optimizer = optim.Adam(
+        list(model.parameters()) + list(HGMAE_model.parameters()) + [HGMAE_weight, RHMGA_weight],
+        lr=args.lr,
+        weight_decay=args.weight_decay
+    )
+    #optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     # optimizer = optim.Adam(list(model.parameters()) + [raw_weights], lr=args.lr, weight_decay=args.weight_decay)
 
@@ -186,6 +307,7 @@ def train(rank=None, world_size=None, args=None):
 
     ## early stopping strategy
     best_model_dict = None
+    best_HGMAE_model_dict=None
     best_epoch = 0
     min_loss = 1e8
     wait_count = 0
@@ -218,10 +340,20 @@ def train(rank=None, world_size=None, args=None):
                 else:
                     subgs = [sg.to(device_0) for sg in subgs]
                 curr_mask_rate, feat_loss, adj_loss, degree_loss = model(subgs, relations, epoch, i)
-                # print(feat_loss, adj_loss, degree_loss * 0.01)
-                loss = args.feat_alpha * feat_loss + args.edge_alpha * adj_loss
+                HGMAE_loss, loss_item = HGMAE_model(HGMAE_feats, mps, nei_index=nei_index, epoch=epoch)
+
+                # Normalize weights using softmax
+                weight_softmax = torch.softmax(torch.stack([HGMAE_weight, RHMGA_weight]), dim=0)
+                HGMAE_weight_norm = weight_softmax[0]
+                RHMGA_weight_norm = weight_softmax[1]
+
+                # Compute total loss
+                RHMGA_loss = args.feat_alpha * feat_loss + args.edge_alpha * adj_loss
+                loss = HGMAE_loss * HGMAE_weight_norm + RHMGA_loss * RHMGA_weight_norm
+
                 # print(loss)
                 train_loss += loss.item()
+                
                 loss.backward()
                 if not args.accumu_grad:
                     optimizer.step()
@@ -241,11 +373,13 @@ def train(rank=None, world_size=None, args=None):
                 dist.reduce(avg_train_loss, dst=0, op=dist.ReduceOp.SUM)
                 avg_train_loss = avg_train_loss.item() / world_size
             if not args.parallel or rank == 0:
-                print(f"Epoch:{epoch+1}/{args.epoches} Training Loss:{(avg_train_loss)} Learning_rate={scheduler.get_last_lr()}")
+                print(f"Epoch:{epoch+1}/{args.epoches} Training Loss:{(avg_train_loss)} Learning_rate={scheduler.get_last_lr()}\n")
+                print(f"RHMGA weight:{RHMGA_weight_norm},HGMAE weight:{HGMAE_weight_norm}\n")
                 total_loss.append(avg_train_loss)
                 if avg_train_loss < min_loss:
                     min_loss = avg_train_loss
                     best_model_dict = model.state_dict()
+                    best_HGMAE_model_dict = HGMAE_model.state_dict()
                     best_epoch = epoch + 1
                     wait_count = 0
                 else:
@@ -254,6 +388,8 @@ def train(rank=None, world_size=None, args=None):
                 ## Evaluate Embedding Performance
                 if wait_count > args.partience:
                 #if epoch > 0 and ((epoch + 1) % args.eva_interval) == 0:
+                    HGMAE_model.load_state_dict(best_HGMAE_model_dict)
+                    HGMAE_model.eval()
                     model.load_state_dict(best_model_dict)
                     model.eval()
                     log_file_name = name_file(args, "log", log_times)
@@ -271,6 +407,8 @@ def train(rank=None, world_size=None, args=None):
                             enc_feat, att_sc = model.module.encode_embedding(graph, relations, target_type, "evaluation", rank)
                         else:
                             enc_feat, att_sc = model.encode_embedding(graph, relations, target_type, "evaluation", device_0)
+                            HGMAE_embeds=HGMAE_model.get_embeds(HGMAE_feats, mps, nei_index)
+                            enc_feat=RHMGA_weight_norm.detach()*enc_feat.detach()+HGMAE_weight_norm.detach()*HGMAE_embeds.detach()
                         target_type_labels = graph.nodes[target_type].data["label"]
                         if args.task == "classification" or args.task == "all":
 
@@ -497,7 +635,7 @@ if __name__ == "__main__":
     parser.add_argument("--feat_mask", default=True, help="mask node feature or not")
     ## event controller
     parser.add_argument("--classifier", type=str, default="MLP", help="classifier for node classification")
-    parser.add_argument("--clus_algorithm", type=str, default="K-Means", help="clustering algorithm")
+    parser.add_argument("--clus_algorithm", type=str, default="kmeans", help="clustering algorithm")
     parser.add_argument("--task", type=str, default="all", help="downstream task")
     parser.add_argument("--cls_visual", default=False, help="draw clustering visualization")
     parser.add_argument("--save_model", default=False, help="save best model or not")
